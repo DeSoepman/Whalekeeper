@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+# Labels for GitHub Container Registry
+LABEL org.opencontainers.image.source="https://github.com/desoepman/whalekeeper"
+LABEL org.opencontainers.image.description="Keep your Docker containers fresh and up-to-date, automatically"
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Install Docker CLI
 RUN apt-get update && \
     apt-get install -y docker.io && \
