@@ -1,0 +1,70 @@
+# Whalekeeper Configuration
+
+# Cron schedule for checking updates (default: "0 22 * * 1" = Every Monday at 10 PM)
+# Examples:
+#   "0 22 * * 1"    - Every Monday at 10 PM
+#   "0 */6 * * *"   - Every 6 hours
+#   "0 2 * * *"     - Every day at 2 AM
+#   "*/30 * * * *"  - Every 30 minutes
+cron_schedule: "0 22 * * 1"
+
+# Container monitoring settings
+monitoring:
+  # Monitor all containers by default
+  monitor_all: true
+  
+  # Optional: Filter by specific labels (only if monitor_all is false)
+  # labels:
+  #   - "autoupdate=true"
+  #   - "environment=production"
+  
+  # Optional: Exclude specific containers by name
+  exclude_containers:
+    - "docker-updater"  # Don't update ourselves!
+
+# Notification settings
+notifications:
+  # Email via SMTP
+  email:
+    enabled: false
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    use_tls: true
+    username: "your-email@gmail.com"
+    password: "your-app-password"
+    from_address: "your-email@gmail.com"
+    to_addresses:
+      - "recipient@example.com"
+  
+  # Discord webhook
+  discord:
+    enabled: false
+    webhook_url: "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
+  
+  # Generic webhook
+  webhook:
+    enabled: false
+    url: "https://your-webhook-endpoint.com/notify"
+    method: "POST"
+    headers:
+      Content-Type: "application/json"
+
+# Rollback settings
+rollback:
+  # Keep last N image versions for rollback
+  keep_versions: 3
+  
+# Web GUI settings
+web:
+  host: "0.0.0.0"
+  port: 9090
+  # Optional: Basic auth (leave empty to disable)
+  username: ""
+  password: ""
+
+# Docker registry settings
+registry:
+  # For Docker Hub public images, leave empty
+  # For private registries, provide credentials
+  username: ""
+  password: ""

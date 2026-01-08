@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup - Whalekeeper</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #161718;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #e0e0e0;
+        }
+        
+        .setup-container {
+            background: #191A1C;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            padding: 40px;
+            width: 100%;
+            max-width: 450px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            color: #ffffff;
+            font-size: 24px;
+            margin-bottom: 8px;
+        }
+        
+        .subtitle {
+            color: #666666;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            color: #e0e0e0;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            background: #0a0a0a;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        input[type="text"]:focus,
+        input[type="password"]:focus {
+            outline: none;
+            border-color: #00ff88;
+        }
+        
+        .setup-button {
+            width: 100%;
+            padding: 12px;
+            background: #00ff88;
+            color: #0a0a0a;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 10px;
+        }
+        
+        .setup-button:hover {
+            background: #00cc6f;
+            transform: translateY(-1px);
+        }
+        
+        .setup-button:active {
+            transform: translateY(0);
+        }
+        
+        .setup-button:disabled {
+            background: #333333;
+            color: #666666;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .error-message {
+            background: rgba(255, 68, 68, 0.15);
+            color: #ff4444;
+            border: 1px solid rgba(255, 68, 68, 0.3);
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .error-message.show {
+            display: block;
+        }
+        
+        .success-message {
+            background: rgba(0, 255, 136, 0.15);
+            color: #00ff88;
+            border: 1px solid rgba(0, 255, 136, 0.3);
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .success-message.show {
+            display: block;
+        }
+        
+        .hint {
+            font-size: 12px;
+            color: #666666;
+            margin-top: 6px;
+        }
+        
+        .password-strength {
+            margin-top: 8px;
+            font-size: 12px;
+        }
+        
+        .password-strength.weak {
+            color: #ff4444;
+        }
+        
+        .password-strength.medium {
+            color: #ffaa00;
+        }
+        
+        .password-strength.strong {
+            color: #00ff88;
+        }
+    </style>
+</head>
+<body>
+    <div class="setup-container">
+        <div class="logo">
+            <h1>Welcome! 🚀</h1>
+            <p class="subtitle">Let's set up your admin account to secure your Whalekeeper</p>
+        </div>
+        
+        <div id="error" class="error-message"></div>
+        <div id="success" class="success-message"></div>
+        
+        <form id="setup-form">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autofocus minlength="3">
+                <div class="hint">At least 3 characters</div>
+            </div>
+            
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required minlength="8">
+                <div id="password-strength" class="password-strength"></div>
+                <div class="hint">At least 8 characters</div>
+            </div>
+            
+            <div class="form-group">
+                <label for="confirm-password">Confirm Password</label>
+                <input type="password" id="confirm-password" name="confirm-password" required>
+            </div>
+            
+            <button type="submit" class="setup-button" id="setup-btn">Create Account & Continue</button>
+        </form>
+    </div>
+    
+    <script>
+        const form = document.getElementById('setup-form');
+        const errorDiv = document.getElementById('error');
+        const successDiv = document.getElementById('success');
+        const setupBtn = document.getElementById('setup-btn');
+        const passwordInput = document.getElementById('password');
+        const confirmPasswordInput = document.getElementById('confirm-password');
+        const passwordStrength = document.getElementById('password-strength');
+        
+        // Password strength indicator
+        passwordInput.addEventListener('input', () => {
+            const password = passwordInput.value;
+            const strength = calculatePasswordStrength(password);
+            
+            if (password.length === 0) {
+                passwordStrength.textContent = '';
+                passwordStrength.className = 'password-strength';
+            } else if (strength < 3) {
+                passwordStrength.textContent = '⚠️ Weak password';
+                passwordStrength.className = 'password-strength weak';
+            } else if (strength < 5) {
+                passwordStrength.textContent = '✓ Medium strength';
+                passwordStrength.className = 'password-strength medium';
+            } else {
+                passwordStrength.textContent = '✓ Strong password';
+                passwordStrength.className = 'password-strength strong';
+            }
+        });
+        
+        function calculatePasswordStrength(password) {
+            let strength = 0;
+            if (password.length >= 8) strength++;
+            if (password.length >= 12) strength++;
+            if (/[a-z]/.test(password) && /[A-Z]/.test(password)) strength++;
+            if (/\d/.test(password)) strength++;
+            if (/[^a-zA-Z0-9]/.test(password)) strength++;
+            return strength;
+        }
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = passwordInput.value;
+            const confirmPassword = confirmPasswordInput.value;
+            
+            // Validation
+            if (password !== confirmPassword) {
+                errorDiv.textContent = 'Passwords do not match';
+                errorDiv.classList.add('show');
+                successDiv.classList.remove('show');
+                return;
+            }
+            
+            if (password.length < 8) {
+                errorDiv.textContent = 'Password must be at least 8 characters';
+                errorDiv.classList.add('show');
+                successDiv.classList.remove('show');
+                return;
+            }
+            
+            // Disable button during registration
+            setupBtn.disabled = true;
+            setupBtn.textContent = 'Creating account...';
+            errorDiv.classList.remove('show');
+            successDiv.classList.remove('show');
+            
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    successDiv.textContent = '✓ Account created! Redirecting to login...';
+                    successDiv.classList.add('show');
+                    
+                    // Redirect to login after 1 second
+                    setTimeout(() => {
+                        window.location.href = '/login';
+                    }, 1000);
+                } else {
+                    errorDiv.textContent = data.message || 'Failed to create account';
+                    errorDiv.classList.add('show');
+                    setupBtn.disabled = false;
+                    setupBtn.textContent = 'Create Account & Continue';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Connection error. Please try again.';
+                errorDiv.classList.add('show');
+                setupBtn.disabled = false;
+                setupBtn.textContent = 'Create Account & Continue';
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whalekeeper</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #161718;
+            min-height: 100vh;
+            color: #e0e0e0;
+            display: flex;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .sidebar {
+            width: 300px;
+            background: #191A1C;
+            border-right: 1px solid #2a2a2a;
+            height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .sidebar-header {
+            padding: 30px 20px;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        
+        .sidebar-header h1 {
+            font-size: 20px;
+            margin-bottom: 10px;
+            color: #ffffff;
+        }
+        
+        .nav-menu {
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            flex: 1;
+        }
+        
+        .version {
+            padding: 15px 20px;
+            color: #666666;
+            font-size: 12px;
+            text-align: center;
+            border-top: 1px solid #2a2a2a;
+            margin-top: auto;
+        }
+        
+        .nav-button {
+            display: block;
+            width: 100%;
+            background: transparent;
+            color: #fff;
+            border: none;
+            padding: 15px 20px;
+            text-align: left;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.2s;
+            border-radius: 10px;
+        }
+        
+        .nav-button:hover {
+            background: #222222;
+            color: #e0e0e0;
+        }
+        
+        .nav-button.active {
+            background: #26282b;
+            color: #fff;
+            border-left-color: #fff;
+        }
+        
+        .container {
+            margin-left: 300px;
+            flex: 1;
+            padding: 30px;
+            max-width: calc(100% - 300px);
+        }
+        
+        header {
+            background: #1a1a1a;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            border: 1px solid #2a2a2a;
+        }
+        
+        h1 {
+            color: #ffffff;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            background: #00ff88;
+            color: #0a0a0a;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .controls {
+            background: #1a1a1a;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #2a2a2a;
+        }
+        
+        button {
+            background: #fff;
+            color: #0a0a0a;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            margin-right: 10px;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            background: #00cc6f;
+            transform: translateY(-1px);
+        }
+        
+        button:disabled {
+            background: #333333;
+            color: #666666;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.danger {
+            background: #ff4444;
+            color: white;
+        }
+        
+        button.danger:hover {
+            background: #cc0000;
+        }
+        
+        .section {
+            background: #191A1C;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            border: 1px solid #2a2a2a;
+        }
+        
+        h2 {
+            color: #ffffff;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #2a2a2a;
+            font-weight: 600;
+            font-size: 18px;
+        }
+        
+        .section-heading {
+            color: #00ff88;
+            margin-bottom: 15px;
+            font-weight: 600;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .section-heading::before {
+            content: '';
+            width: 4px;
+            height: 18px;
+            background: #00ff88;
+            border-radius: 2px;
+        }
+        
+        .containers-section {
+            margin-bottom: 25px;
+        }
+        
+        .containers-section:last-child {
+            margin-bottom: 0;
+        }
+        
+        .section-heading {
+            color: #00ff88;
+            margin-bottom: 15px;
+            font-weight: 600;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .section-heading::before {
+            content: '';
+            width: 4px;
+            height: 18px;
+            background: #00ff88;
+            border-radius: 2px;
+        }
+        
+        .containers-section {
+            margin-bottom: 25px;
+        }
+        
+        .containers-section:last-child {
+            margin-bottom: 0;
+        }
+        
+        .container-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .container-card {
+            background: #1F2023;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #2a2a2a;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        
+        .container-card:hover {
+            border-color: #00ff88;
+            transform: translateY(-2px);
+        }
+        
+        .container-name {
+            font-weight: 600;
+            color: #ffffff;
+            font-size: 16px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .container-status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #00ff88;
+            border-radius: 50%;
+            box-shadow: 0 0 8px rgba(0, 255, 136, 0.6);
+        }
+        
+        .container-status.exited {
+            background: #ff4444;
+            box-shadow: 0 0 8px rgba(255, 68, 68, 0.6);
+        }
+        
+        .container-status.paused {
+            background: #ffaa00;
+            box-shadow: 0 0 8px rgba(255, 170, 0, 0.6);
+        }
+        
+        .container-image {
+            color: #808080;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            background: #0a0a0a;
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-bottom: 8px;
+            border: 1px solid #2a2a2a;
+        }
+        
+        .container-id {
+            color: #666666;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .history-item {
+            background: #1a1a1a;
+            padding: 10px;
+            text-align: left;
+            font-size: 12px;
+
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            
+            margin-bottom: 10px;
+            border-left: 3px solid #00ff88;
+            border-top: 1px solid #2a2a2a;
+            border-right: 1px solid #2a2a2a;
+            border-bottom: 1px solid #2a2a2a;
+        }
+
+        .history-item .history-badge {
+            width: 100px;
+            display: flex;
+            justify-content: center;
+
+        }
+
+        .history-item .history-content {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .history-item .history-tags {
+            color: #9c9c9c;
+        }
+        
+        .history-item.failed {
+            border-left-color: #ff4444;
+        }
+        
+        .history-item.checked {
+            border-left-color: #00aaff;
+        }
+        
+        .history-title {
+            color: #b1b1b1;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .badge.success {
+            background: rgba(0, 255, 136, 0.15);
+            color: #00ff88;
+            border: 1px solid rgba(0, 255, 136, 0.3);
+        }
+        
+        .badge.failed {
+            background: rgba(255, 68, 68, 0.15);
+            color: #ff4444;
+            border: 1px solid rgba(255, 68, 68, 0.3);
+        }
+        
+        .badge.checked {
+            background: rgba(0, 170, 255, 0.15);
+            color: #00aaff;
+            border: 1px solid rgba(0, 170, 255, 0.3);
+        }
+        
+        .badge.rollback {
+            background: rgba(255, 170, 0, 0.15);
+            color: #ffaa00;
+            border: 1px solid rgba(255, 170, 0, 0.3);
+        }
+        
+        .loading {
+            text-align: center;
+            color: #666666;
+        }
+        
+        select {
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid #2a2a2a;
+            margin-right: 10px;
+            font-size: 14px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        
+        select:focus {
+            outline: none;
+            border-color: #00ff88;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #e0e0e0;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        .form-group input[type="text"],
+        .form-group input[type="email"],
+        .form-group input[type="url"],
+        .form-group input[type="number"],
+        .form-group input[type="password"],
+        .form-group textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #2a2b2d;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            background: #161718;
+            color: #e0e0e0;
+            transition: border-color 0.2s;
+        }
+        
+        .form-group input[type="text"]:focus,
+        .form-group input[type="email"]:focus,
+        .form-group input[type="url"]:focus,
+        .form-group input[type="number"]:focus,
+        .form-group input[type="password"]:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #00ff88;
+        }
+        
+        .form-group input[type="checkbox"] {
+            margin-right: 8px;
+            accent-color: #00ff88;
+        }
+        
+        .form-group small {
+            display: block;
+            margin-top: 5px;
+            color: #666666;
+            font-size: 12px;
+        }
+        
+        .form-group h3 {
+            margin-top: 30px;
+            margin-bottom: 15px;
+            color: #00ff88;
+            border-bottom: 1px solid #2a2a2a;
+            padding-bottom: 10px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .form-actions {
+            margin-top: 30px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .notification-tab {
+            display: none;
+        }
+        
+        .notification-tab.active {
+            display: block;
+        }
+        
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            animation: fadeIn 0.2s;
+        }
+        
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background: #1a1a1a;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid #2a2a2a;
+            animation: slideIn 0.2s;
+        }
+        
+        .modal-header {
+            color: #ffffff;
+            font-size: 20px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+        
+        .modal-body {
+            color: #e0e0e0;
+            line-height: 1.6;
+            margin-bottom: 25px;
+        }
+        
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        
+        .modal-footer button {
+            margin: 0;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #2a2a2a;
+            border-top: 3px solid #00ff88;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        @keyframes slideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .container-menu-icon {
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.2s, color 0.2s;
+            font-size: 20px;
+            line-height: 1;
+            color: #666666;
+            user-select: none;
+        }
+        
+        .container-menu-icon:hover {
+            background: #2a2a2a;
+            color: #00ff88;
+        }
+        
+        .container-menu {
+            position: absolute;
+            right: 10px;
+            top: 35px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.8);
+            min-width: 180px;
+            z-index: 100;
+            display: none;
+        }
+        
+        .container-menu.active {
+            display: block;
+        }
+        
+        .container-menu-item {
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+            color: #e0e0e0;
+            border-bottom: 1px solid #2a2a2a;
+            font-size: 14px;
+        }
+        
+        .container-menu-item:last-child {
+            border-bottom: none;
+        }
+        
+        .container-menu-item:hover {
+            background: #2a2a2a;
+        }
+        
+        .container-menu-item.danger {
+            color: #ff4444;
+        }
+        
+        .container-menu-item.danger:hover {
+            background: rgba(255, 68, 68, 0.1);
+        }
+        
+        .container-menu-item.success {
+            color: #00ff88;
+        }
+        
+        .container-menu-item.success:hover {
+            background: rgba(0, 255, 136, 0.1);
+        }
+        
+        .container-card {
+            position: relative;
+        }
+        
+        .checking-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            border-radius: 8px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: #00ff88;
+            font-weight: 600;
+            z-index: 10;
+        }
+        
+        .container-card.checking .checking-overlay {
+            display: flex;
+        }
+        
+        /* Hamburger Menu Icon */
+        .hamburger {
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+        
+        .hamburger:hover {
+            background: #2a2a2a;
+        }
+        
+        .hamburger span {
+            width: 24px;
+            height: 2px;
+            background: #00ff88;
+            border-radius: 2px;
+        }
+        
+        /* Mobile Responsive Styles */
+        @media (max-width: 768px) {
+            .hamburger {
+                display: flex;
+            }
+            
+            .hamburger span {
+                background: #ffffff;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: auto;
+                position: fixed;
+                top: 0;
+                left: 0;
+                z-index: 1000;
+                border-right: none;
+                border-bottom: 1px solid #2a2a2a;
+            }
+            
+            .sidebar-header {
+                padding: 15px 20px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .sidebar-header h1 {
+                font-size: 18px;
+                margin-bottom: 0;
+            }
+            
+            .sidebar-header .status {
+                display: none;
+            }
+            
+            .nav-menu {
+                display: none;
+                flex-direction: column;
+                padding: 0;
+                gap: 0;
+                position: fixed;
+                top: 60px;
+                left: 0;
+                width: 100%;
+                height: calc(100vh - 60px);
+                background: #1a1a1a;
+                overflow-y: auto;
+                z-index: 999;
+            }
+            
+            .nav-menu.active {
+                display: flex;
+            }
+            
+            .nav-button {
+                padding: 15px 20px;
+                border-left: none;
+                border-bottom: 1px solid #2a2a2a;
+                white-space: nowrap;
+                text-align: left;
+            }
+            
+            .nav-button:hover,
+            .nav-button.active {
+                border-left: none;
+                background: #2a2a2a;
+            }
+            
+            .nav-button.active {
+                color: #ffffff;
+            }
+            
+            .container {
+                margin-left: 0;
+                margin-top: 70px;
+                max-width: 100%;
+                padding: 15px;
+            }
+            
+            .section {
+                padding: 20px;
+            }
+            
+            .container-grid {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+            
+            .controls {
+                padding: 15px;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+            }
+            
+            .controls button {
+                margin-bottom: 0;
+                margin-right: 0;
+            }
+            
+            button {
+                padding: 10px 16px;
+                font-size: 14px;
+            }
+            
+            .form-actions {
+                flex-direction: column;
+            }
+            
+            .form-actions button {
+                width: 100%;
+                margin-right: 0;
+                margin-bottom: 10px;
+            }
+            
+            .modal-content {
+                width: 95%;
+                padding: 20px;
+            }
+            
+            .modal-header {
+                font-size: 18px;
+            }
+            
+            h2 {
+                font-size: 16px;
+            }
+            
+            select {
+                width: 100%;
+                margin-bottom: 10px;
+            }
+
+            .history-item {
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .sidebar-header {
+                padding: 15px;
+            }
+            
+            .container {
+                padding: 10px;
+            }
+            
+            .section {
+                padding: 15px;
+            }
+            
+            .container-card {
+                padding: 15px;
+            }
+            
+            .container-name {
+                font-size: 14px;
+            }
+            
+            .container-image {
+                font-size: 11px;
+                padding: 6px 10px;
+            }
+            
+            .container-id {
+                font-size: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Left Sidebar Navigation -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>🐳 Whalekeeper</h1>
+            <span class="status">● Monitoring Active</span>
+            <div class="hamburger" onclick="toggleMobileMenu()">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+        
+        <div class="nav-menu">
+            <button class="nav-button active" onclick="showTab(event, 'dashboard')">Dashboard</button>
+            <button class="nav-button" onclick="showTab(event, 'config')">Configuration</button>
+            <button class="nav-button" onclick="showTab(event, 'notifications')">Notifications</button>
+            <button class="nav-button" onclick="showTab(event, 'logs')">Logs</button>
+            <button class="nav-button" style="margin-top: auto; color: #ff4444;" onclick="logout()">Logout</button>
+        </div>
+        <div class="version">...</div>
+    </div>
+    
+    <!-- Main Content Area -->
+    <div class="container">
+        <div id="dashboard" class="tab-content active">
+            <div class="controls">
+                <button onclick="checkNow()">Check for updates</button>
+                <button onclick="refreshData()">Refresh</button>
+            </div>
+        
+            <div class="section">
+                <h2>Docker Containers</h2>
+                <div id="containers" class="loading">Loading...</div>
+            </div>
+            
+            <div class="section">
+                <h2>Rollback</h2>
+                <div style="margin-bottom: 15px;">
+                    <select id="rollback-container">
+                        <option value="">Select container...</option>
+                    </select>
+                    <select id="rollback-version">
+                        <option value="">Select version...</option>
+                    </select>
+                    <button onclick="performRollback()">Rollback</button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="logs" class="tab-content">
+            <div class="section">
+                <h2>Update History</h2>
+                <div id="history" class="loading">Loading...</div>
+            </div>
+        </div>
+        
+        <div id="config" class="tab-content">
+            <div class="section">
+                <h2>Configuration Editor</h2>
+                <form id="config-form">
+                    <div class="form-group">
+                        <label>Cron Schedule</label>
+                        <input type="text" id="cron_schedule" name="cron_schedule" placeholder="0 22 * * 1">
+                        <small>Examples: "0 22 * * 1" (Mon 10PM), "0 */6 * * *" (Every 6h), "*/30 * * * *" (Every 30min)</small>
+                    </div>
+                    
+                    <h3>Monitoring</h3>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="monitor_all" name="monitoring.monitor_all"> Monitor All Containers</label>
+                    </div>
+                    <div class="form-group">
+                        <label>Exclude Containers (one per line)</label>
+                        <textarea id="exclude_containers" name="monitoring.exclude_containers" rows="3"></textarea>
+                    </div>
+                    
+                    <h3>Other Settings</h3>
+                    <div class="form-group">
+                        <label>Keep Versions for Rollback</label>
+                        <input type="number" id="keep_versions" name="rollback.keep_versions" min="1" max="10">
+                    </div>
+                    <div class="form-group">
+                        <label>Web Port</label>
+                        <input type="number" id="web_port" name="web.port" min="1024" max="65535">
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit">Save Configuration</button>
+                        <button type="button" onclick="loadConfig()">Reset</button>
+                        <button type="button" class="danger" onclick="restartContainer()">Restart Container</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <div id="notifications" class="tab-content">
+            <div class="section">
+                <h2>Notification Settings</h2>
+                
+                <div class="tabs" style="margin-bottom: 20px;">
+                    <button class="tab-button active" onclick="showNotificationTab(event, 'email-tab')">Email</button>
+                    <button class="tab-button" onclick="showNotificationTab(event, 'discord-tab')">Discord</button>
+                    <button class="tab-button" onclick="showNotificationTab(event, 'webhook-tab')">Webhook</button>
+                </div>
+                
+                <form id="notification-form">
+                    <div id="email-tab" class="notification-tab active">
+                        <div class="form-group">
+                            <label><input type="checkbox" id="email_enabled" name="notifications.email.enabled"> Enable Email Notifications</label>
+                        </div>
+                        <div class="form-group">
+                            <label>SMTP Host</label>
+                            <input type="text" id="smtp_host" name="notifications.email.smtp_host" placeholder="smtp.gmail.com">
+                        </div>
+                        <div class="form-group">
+                            <label>SMTP Port</label>
+                            <input type="number" id="smtp_port" name="notifications.email.smtp_port" placeholder="587">
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="use_tls" name="notifications.email.use_tls"> Use TLS</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Username</label>
+                            <input type="text" id="email_username" name="notifications.email.username" placeholder="your-email@gmail.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="email_password" name="notifications.email.password" placeholder="App password">
+                        </div>
+                        <div class="form-group">
+                            <label>From Address</label>
+                            <input type="email" id="from_address" name="notifications.email.from_address" placeholder="docker-updater@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label>To Addresses (one per line)</label>
+                            <textarea id="to_addresses" name="notifications.email.to_addresses" rows="3" placeholder="admin@example.com&#10;team@example.com"></textarea>
+                        </div>
+                        
+                        <h3 style="margin-top: 30px; margin-bottom: 15px; border-bottom: 1px solid #3a3a4e; padding-bottom: 10px;">Email Preferences</h3>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="notify_on_update_found" name="notifications.email.notify_on_update_found"> Send email when updates are found</label>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="notify_on_no_updates" name="notifications.email.notify_on_no_updates"> Send email when no updates available</label>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="notify_on_success" name="notifications.email.notify_on_success"> Send email on successful updates</label>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="notify_on_error" name="notifications.email.notify_on_error"> Send email on errors</label>
+                        </div>
+                        
+                        <div class="form-group">
+                            <button type="button" onclick="sendTestEmail()" style="width: auto;">Send Test Email</button>
+                            <small style="display: block; margin-top: 10px;">Send a test email to verify your SMTP settings</small>
+                        </div>
+                    </div>
+                    
+                    <div id="discord-tab" class="notification-tab">
+                        <div class="form-group">
+                            <label><input type="checkbox" id="discord_enabled" name="notifications.discord.enabled"> Enable Discord Notifications</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Webhook URL</label>
+                            <input type="url" id="discord_webhook" name="notifications.discord.webhook_url" placeholder="https://discord.com/api/webhooks/...">
+                            <small>Get this from Discord: Server Settings → Integrations → Webhooks</small>
+                        </div>
+                    </div>
+                    
+                    <div id="webhook-tab" class="notification-tab">
+                        <div class="form-group">
+                            <label><input type="checkbox" id="webhook_enabled" name="notifications.webhook.enabled"> Enable Generic Webhook</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Webhook URL</label>
+                            <input type="url" id="webhook_url" name="notifications.webhook.url" placeholder="https://your-api.com/webhook">
+                            <small>POST requests will be sent with update details in JSON format</small>
+                        </div>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit">Save Notification Settings</button>
+                        <button type="button" onclick="loadConfig()">Reset</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal -->
+    <div id="updateModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header" id="modalHeader">Confirm Action</div>
+            <div class="modal-body" id="modalBody">Are you sure?</div>
+            <div class="modal-footer" id="modalFooter">
+                <button id="modalCancelBtn" onclick="closeModal()">Cancel</button>
+                <button id="modalConfirmBtn" onclick="confirmModalAction()">Confirm</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
