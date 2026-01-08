@@ -286,7 +286,7 @@ async def check_now(session_data: str = Depends(require_auth)):
     """Trigger immediate update check"""
     try:
         # Get list of monitored containers to count them
-        containers = await monitor.get_monitored_containers()
+        containers = monitor.get_monitored_containers()
         container_count = len(containers)
         
         # Add log entry for manual check
@@ -301,7 +301,7 @@ async def check_now(session_data: str = Depends(require_auth)):
         # Run check in background
         import asyncio
         asyncio.create_task(monitor.check_all_containers())
-        return {"message": "Update check started"}
+        return {"success": True, "message": f"Checking {container_count} container{'s' if container_count != 1 else ''} for updates..."}
     except Exception as e:
         logger.error(f"Error triggering check: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -445,7 +445,10 @@ async def save_config(data: Dict, session_data: str = Depends(require_auth)):
         
         # Only update password if it's not the masked placeholder
         if smtp_password and smtp_password != '********':
+            logger.info(f"Saving SMTP password to database (length: {len(smtp_password)})")
             db.set_secure_setting("smtp_password", smtp_password)
+        else:
+            logger.info(f"Skipping password save (empty or masked): '{smtp_password}'")
         
         # Remove password from config data before saving to file
         if data.get('notifications', {}).get('email'):
@@ -502,6 +505,13 @@ async def test_email(data: Dict, session_data: str = Depends(require_auth)):
         password = data.get("password", "")
         from_address = data.get("from_address")
         to_addresses = data.get("to_addresses", [])
+        
+        # If password is empty, try to get it from database
+        if not password:
+            password = db.get_secure_setting("smtp_password") or ""
+            logger.info(f"Retrieved password from database (length: {len(password) if password else 0})")
+        else:
+            logger.info(f"Using password from form (length: {len(password)})")
         
         if not smtp_host or not from_address or not to_addresses:
             raise HTTPException(status_code=400, detail="Missing required email settings")

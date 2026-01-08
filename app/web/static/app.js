@@ -1,7 +1,12 @@
+let isRestarting = false;
+
 async function fetchData(endpoint) {
     const response = await fetch(endpoint);
     if (response.status === 401) {
-        window.location.href = '/login';
+        // Don't redirect to login during restart
+        if (!isRestarting) {
+            window.location.href = '/login';
+        }
         throw new Error('Unauthorized');
     }
     return await response.json();
@@ -23,6 +28,21 @@ function formatDateTime(dateString) {
 function toggleMobileMenu() {
     const navMenu = document.querySelector('.nav-menu');
     const hamburger = document.querySelector('.hamburger');
+    const isOpening = !navMenu.classList.contains('active');
+    
+    if (isOpening) {
+        // Store current scroll position
+        const scrollY = window.scrollY;
+        document.body.style.top = `-${scrollY}px`;
+        document.body.classList.add('menu-open');
+    } else {
+        // Restore scroll position
+        const scrollY = document.body.style.top;
+        document.body.classList.remove('menu-open');
+        document.body.style.top = '';
+        window.scrollTo(0, parseInt(scrollY || '0') * -1);
+    }
+    
     navMenu.classList.toggle('active');
     hamburger.classList.toggle('active');
 }
@@ -109,18 +129,22 @@ async function loadHistory() {
         return;
     }
     
-    history.innerHTML = data.map(h => 
-        '<div class="history-item ' + h.status + '">' +
+    history.innerHTML = data.map(h => {
+        // Only show arrow and images if both old and new images exist
+        const showImages = h.old_image && h.new_image;
+        const imageDisplay = showImages 
+            ? '<div class="history-tags">' + h.old_image + ' → ' + h.new_image + '</div>'
+            : '';
+        
+        return '<div class="history-item ' + h.status + '">' +
             '<div class="history-badge"><span class="badge ' + h.status + '">' + h.status.toUpperCase() + '</span></div>' +
             '<div class="history-content">'+
             '<div class="history-title"><strong>' + h.container_name + '</strong> (' + formatDateTime(h.timestamp) + ')</div>' +
-            '<div class="history-tags">' +
-                h.old_image + ' → ' + h.new_image +
-            '</div>' +
+            imageDisplay +
             (h.message ? '<div class="history-message">' + h.message + '</div>' : '') +
             '</div>' +
-        '</div>'
-    ).join('');
+        '</div>';
+    }).join('');
 }
 
 async function checkNow() {
@@ -130,29 +154,57 @@ async function checkNow() {
         const monitoredContainers = containers.filter(c => c.monitored);
         
         if (monitoredContainers.length === 0) {
-            alert('No containers are currently being monitored');
+            showModal(
+                'No Containers',
+                'No containers are currently being monitored',
+                'OK',
+                () => closeModal(),
+                false,
+                true
+            );
             return;
         }
         
-        // Add checking state to all monitored containers
-        monitoredContainers.forEach(c => {
-            const card = document.querySelector(`[data-container="${c.name}"]`);
-            if (card) {
-                card.classList.add('checking');
-            }
-        });
+        // Show checking modal
+        showModal(
+            'Checking for Updates',
+            '<div><span class="loading-spinner"></span>Checking ' + monitoredContainers.length + ' container' + (monitoredContainers.length > 1 ? 's' : '') + ' for updates...</div>',
+            null,
+            null,
+            true
+        );
         
         // Trigger the check
-        await fetch('/api/check-now', { method: 'POST' });
+        const response = await fetch('/api/check-now', { method: 'POST' });
+        const result = await response.json();
         
         // Wait a bit then refresh
         setTimeout(async () => {
             await refreshData();
-            // Remove checking state
-            document.querySelectorAll('.container-card.checking').forEach(card => {
-                card.classList.remove('checking');
-            });
-        }, 3000);
+            
+            // Get updated container data to check for updates
+            const updatedContainers = await fetchData('/api/containers');
+            const containersWithUpdates = updatedContainers.filter(c => c.has_update);
+            
+            let resultMessage;
+            if (containersWithUpdates.length === 0) {
+                resultMessage = 'All containers are up to date!';
+            } else if (containersWithUpdates.length === 1) {
+                resultMessage = `1 container has an update available: ${containersWithUpdates[0].name}`;
+            } else {
+                resultMessage = `${containersWithUpdates.length} containers have updates available`;
+            }
+            
+            // Show result modal
+            showModal(
+                'Check Complete',
+                resultMessage,
+                'OK',
+                () => closeModal(),
+                false,
+                true
+            );
+        }, 2000);
         
     } catch (error) {
         alert('Error triggering update check: ' + error);
@@ -424,6 +476,9 @@ async function restartContainer() {
         'Are you sure you want to restart the Whalekeeper container?<br><br>This will reload the configuration and briefly interrupt service.',
         'Restart',
         async () => {
+            // Set flag to prevent 401 redirects during restart
+            isRestarting = true;
+            
             // Step 2: Show restarting message
             showModal(
                 'Restarting Server',
@@ -433,25 +488,19 @@ async function restartContainer() {
                 true
             );
             
-            try {
-                const response = await fetch('/api/restart', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                
-                const result = await response.json();
-                
-                // Step 3: Wait for server to come back online
-                await waitForServer();
-                
-                // Step 4: Reload page
-                window.location.reload();
-                
-            } catch (error) {
+            // Trigger restart - don't wait for response as connection will drop
+            fetch('/api/restart', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }).catch(() => {
                 // Expected - connection will drop during restart
-                await waitForServer();
-                window.location.reload();
-            }
+            });
+            
+            // Wait for server to come back online
+            await waitForServer();
+            
+            // Reload page
+            window.location.reload();
         }
     );
 }
@@ -520,6 +569,12 @@ function showTab(evt, tabName) {
     if (navMenu && navMenu.classList.contains('active')) {
         navMenu.classList.remove('active');
         hamburger.classList.remove('active');
+        
+        // Restore scroll position
+        const scrollY = document.body.style.top;
+        document.body.classList.remove('menu-open');
+        document.body.style.top = '';
+        window.scrollTo(0, parseInt(scrollY || '0') * -1);
     }
     
     // Load config if switching to config tab
@@ -657,6 +712,10 @@ document.getElementById('notification-form').addEventListener('submit', async fu
     // Get current config first
     const config = await fetchData('/api/config');
     
+    // Get password value - only include if it's not the masked placeholder
+    const passwordValue = document.getElementById('email_password').value;
+    const password = (passwordValue && passwordValue !== '********') ? passwordValue : '';
+    
     // Update only notification settings
     config.notifications = {
         email: {
@@ -665,7 +724,7 @@ document.getElementById('notification-form').addEventListener('submit', async fu
             smtp_port: parseInt(document.getElementById('smtp_port').value) || 587,
             use_tls: document.getElementById('use_tls').checked,
             username: document.getElementById('email_username').value,
-            password: document.getElementById('email_password').value,
+            password: password,
             from_address: document.getElementById('from_address').value,
             to_addresses: document.getElementById('to_addresses').value
                 .split('\n').filter(x => x.trim()),
@@ -691,17 +750,26 @@ document.getElementById('notification-form').addEventListener('submit', async fu
     });
     
     const result = await response.json();
-    alert(result.message);
+    showModal(
+        result.success ? 'Settings Saved' : 'Save Failed',
+        result.message,
+        'OK',
+        () => closeModal(),
+        false,
+        true
+    );
 });
 
 // Send test email
 async function sendTestEmail() {
+    const passwordValue = document.getElementById('email_password').value;
+    
     const emailData = {
         smtp_host: document.getElementById('smtp_host').value,
         smtp_port: parseInt(document.getElementById('smtp_port').value) || 587,
         use_tls: document.getElementById('use_tls').checked,
         username: document.getElementById('email_username').value,
-        password: document.getElementById('email_password').value,
+        password: passwordValue === '********' ? '' : passwordValue,
         from_address: document.getElementById('from_address').value,
         to_addresses: document.getElementById('to_addresses').value
             .split('\n').filter(x => x.trim())
@@ -744,14 +812,18 @@ async function sendTestEmail() {
             result.success ? 'Test Email Sent' : 'Test Email Failed',
             result.message,
             'OK',
-            () => closeModal()
+            () => closeModal(),
+            false,
+            true
         );
     } catch (error) {
         showModal(
             'Error',
             `Failed to send test email: ${error}`,
             'OK',
-            () => closeModal()
+            () => closeModal(),
+            false,
+            true
         );
     }
 }

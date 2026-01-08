@@ -21,6 +21,12 @@
             padding: 0;
         }
         
+        body.menu-open {
+            position: fixed;
+            width: 100%;
+            overflow: hidden;
+        }
+        
         .sidebar {
             width: 300px;
             background: #191A1C;
@@ -46,15 +52,30 @@
         }
         
         .nav-menu {
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 5px;
+            flex: 1;
+        }
+
+        .nav-menu button {
+            margin: 0;
+        }
+
+        .nav-menu nav {
             padding: 20px;
             display: flex;
             flex-direction: column;
             gap: 5px;
-            flex: 1;
+        }
+
+        .nav-menu .nav-footer .nav-buttons {
+            padding: 20px;
         }
         
         .version {
-            padding: 15px 20px;
+            padding: 20px;
             color: #666666;
             font-size: 12px;
             text-align: center;
@@ -80,6 +101,7 @@
         .nav-button:hover {
             background: #222222;
             color: #e0e0e0;
+            transform: none;
         }
         
         .nav-button.active {
@@ -709,13 +731,13 @@
             .nav-menu {
                 display: none;
                 flex-direction: column;
-                padding: 0;
-                gap: 0;
+                gap: 10px;
                 position: fixed;
-                top: 60px;
+                top: 64px;
                 left: 0;
                 width: 100%;
-                height: calc(100vh - 60px);
+                height: calc(100vh - 64px);
+                height: calc(100dvh - 64px);
                 background: #1a1a1a;
                 overflow-y: auto;
                 z-index: 999;
@@ -728,9 +750,9 @@
             .nav-button {
                 padding: 15px 20px;
                 border-left: none;
-                border-bottom: 1px solid #2a2a2a;
                 white-space: nowrap;
                 text-align: left;
+                margin-right: 0;
             }
             
             .nav-button:hover,
@@ -857,13 +879,20 @@
         </div>
         
         <div class="nav-menu">
-            <button class="nav-button active" onclick="showTab(event, 'dashboard')">Dashboard</button>
-            <button class="nav-button" onclick="showTab(event, 'config')">Configuration</button>
-            <button class="nav-button" onclick="showTab(event, 'notifications')">Notifications</button>
-            <button class="nav-button" onclick="showTab(event, 'logs')">Logs</button>
-            <button class="nav-button" style="margin-top: auto; color: #ff4444;" onclick="logout()">Logout</button>
+            <nav>
+                <button class="nav-button active" onclick="showTab(event, 'dashboard')">Dashboard</button>
+                <button class="nav-button" onclick="showTab(event, 'config')">Configuration</button>
+                <button class="nav-button" onclick="showTab(event, 'notifications')">Notifications</button>
+                <button class="nav-button" onclick="showTab(event, 'logs')">Logs</button>
+                
+            </nav>
+            <div class="nav-footer">
+                <div class="nav-buttons">
+                <button class="nav-button" style="margin-top: auto; color: #ff4444;" onclick="logout()">Logout</button>
+                </div>
+                <div class="version">...</div>
+            </div>
         </div>
-        <div class="version">...</div>
     </div>
     
     <!-- Main Content Area -->
@@ -1026,6 +1055,7 @@
                     <div class="form-actions">
                         <button type="submit">Save Notification Settings</button>
                         <button type="button" onclick="loadConfig()">Reset</button>
+                        <button type="button" class="danger" onclick="restartContainer()">Restart Container</button>
                     </div>
                 </form>
             </div>
