@@ -20,5 +20,3 @@ services:
       - ./VERSION:/app/VERSION
     environment:
       - TZ=Europe/Brussels
-    labels:
-      - "autoupdate=false"  # Don't update ourselves!
