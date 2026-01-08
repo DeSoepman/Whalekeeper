@@ -9,6 +9,8 @@ class MonitoringConfig(BaseModel):
     monitor_all: bool = True
     labels: Optional[List[str]] = None
     exclude_containers: List[str] = []
+    allow_self_update: bool = True
+    self_update_delay: int = 30  # Delay in seconds before self-updating
 
 
 class EmailConfig(BaseModel):
@@ -21,10 +23,8 @@ class EmailConfig(BaseModel):
     from_address: str = ""
     to_addresses: List[str] = []
     # Notification preferences
-    notify_on_update_found: bool = True
-    notify_on_no_updates: bool = False
-    notify_on_success: bool = True
-    notify_on_error: bool = True
+    notify_on_batch_complete: bool = True
+    notify_on_rollback: bool = True
 
 
 class DiscordConfig(BaseModel):

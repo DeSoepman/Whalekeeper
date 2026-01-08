@@ -51,6 +51,19 @@ async function loadContainers() {
     const data = await fetchData('/api/containers');
     const container = document.getElementById('containers');
     
+    // Update version display if whalekeeper has an update
+    const versionEl = document.querySelector('.version');
+    if (versionEl && versionEl.textContent && versionEl.textContent !== '...') {
+        const whalekeeper = data.find(c => c.name === 'whalekeeper');
+        const currentVersion = versionEl.textContent.replace(' (Update available)', '');
+        
+        if (whalekeeper && whalekeeper.has_update) {
+            versionEl.innerHTML = currentVersion + ' <span style="color: #009951; font-weight: 500;">(Update available)</span>';
+        } else {
+            versionEl.textContent = currentVersion;
+        }
+    }
+    
     if (data.length === 0) {
         container.innerHTML = '<p>No containers being monitored</p>';
         return;
@@ -60,11 +73,11 @@ async function loadContainers() {
     const notMonitored = data.filter(c => !c.monitored);
     
     const renderContainer = (c) => 
-        '<div class="container-card" data-container="' + c.name + '">' +
+        '<div class="container-card" data-container="' + c.name + '" data-monitored="' + c.monitored + '">' +
             '<div class="container-name">' +
                 '<span>' + c.name + '</span>' +
                 '<div style="display: flex; align-items: center; gap: 8px;">' +
-                    '<span class="container-status ' + c.status + '" title="Status: ' + c.status + '"></span>' +
+                    '<span class="container-status ' + (c.monitored ? '' : 'not-monitored') + '" title="' + (c.monitored ? 'Monitored' : 'Not Monitored') + '"></span>' +
                     '<span class="container-menu-icon" onclick="toggleContainerMenu(event, \'' + c.name + '\', ' + c.monitored + ')">⋮</span>' +
                 '</div>' +
             '</div>' +
@@ -93,7 +106,7 @@ async function loadContainers() {
     
     if (notMonitored.length > 0) {
         html += '<div class="containers-section">' +
-                '<div class="section-heading">Not Monitored</div>' +
+                '<div class="section-heading not-monitored">Not Monitored</div>' +
                 '<div class="container-grid">' + notMonitored.map(renderContainer).join('') + '</div>' +
                 '</div>';
     }
@@ -983,7 +996,15 @@ async function loadVersion() {
         const data = await fetchData('/api/version');
         const versionEl = document.querySelector('.version');
         if (versionEl && data.version) {
-            versionEl.textContent = data.version;
+            // Check if whalekeeper container has an update
+            const containers = await fetchData('/api/containers');
+            const whalekeeper = containers.find(c => c.name === 'whalekeeper');
+            
+            if (whalekeeper && whalekeeper.has_update) {
+                versionEl.innerHTML = data.version + ' <span style="color: #009951; font-weight: 500;">(Update available)</span>';
+            } else {
+                versionEl.textContent = data.version;
+            }
         }
     } catch (error) {
         console.error('Failed to load version:', error);

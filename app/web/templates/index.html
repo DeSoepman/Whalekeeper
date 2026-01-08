@@ -216,6 +216,14 @@
             background: #00ff88;
             border-radius: 2px;
         }
+
+        .section-heading.not-monitored {
+            color: #f44e48;
+        }
+
+        .section-heading.not-monitored::before {
+            background: #f44e48;
+        }
         
         .containers-section {
             margin-bottom: 25px;
@@ -271,6 +279,10 @@
             transform: translateY(-2px);
         }
         
+        .container-card[data-monitored="false"]:hover {
+            border-color: #f44e48;
+        }
+        
         .container-name {
             font-weight: 600;
             color: #ffffff;
@@ -290,14 +302,9 @@
             box-shadow: 0 0 8px rgba(0, 255, 136, 0.6);
         }
         
-        .container-status.exited {
-            background: #ff4444;
-            box-shadow: 0 0 8px rgba(255, 68, 68, 0.6);
-        }
-        
-        .container-status.paused {
-            background: #ffaa00;
-            box-shadow: 0 0 8px rgba(255, 170, 0, 0.6);
+        .container-status.not-monitored {
+            background: #f44e48;
+            box-shadow: 0 0 8px rgba(244, 78, 72, 0.6);
         }
         
         .container-image {
@@ -1015,16 +1022,12 @@
                         
                         <h3 style="margin-top: 30px; margin-bottom: 15px; border-bottom: 1px solid #3a3a4e; padding-bottom: 10px;">Email Preferences</h3>
                         <div class="form-group">
-                            <label><input type="checkbox" id="notify_on_update_found" name="notifications.email.notify_on_update_found"> Send email when updates are found</label>
+                            <label><input type="checkbox" id="notify_on_batch_complete" name="notifications.email.notify_on_batch_complete"> Send summary after checking all containers</label>
+                            <small style="display: block; margin-left: 24px; margin-top: 5px; color: #888;">When scheduled cron runs or you click "Check for Updates"</small>
                         </div>
                         <div class="form-group">
-                            <label><input type="checkbox" id="notify_on_no_updates" name="notifications.email.notify_on_no_updates"> Send email when no updates available</label>
-                        </div>
-                        <div class="form-group">
-                            <label><input type="checkbox" id="notify_on_success" name="notifications.email.notify_on_success"> Send email on successful updates</label>
-                        </div>
-                        <div class="form-group">
-                            <label><input type="checkbox" id="notify_on_error" name="notifications.email.notify_on_error"> Send email on errors</label>
+                            <label><input type="checkbox" id="notify_on_rollback" name="notifications.email.notify_on_rollback"> Send email when rolling back a container</label>
+                            <small style="display: block; margin-left: 24px; margin-top: 5px; color: #888;">Notification includes rollback details and status</small>
                         </div>
                         
                         <div class="form-group">

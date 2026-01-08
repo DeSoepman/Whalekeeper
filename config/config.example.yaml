@@ -20,7 +20,7 @@ monitoring:
   
   # Optional: Exclude specific containers by name
   exclude_containers:
-    - "docker-updater"  # Don't update ourselves!
+    - "whalekeeper"  # Don't update ourselves!
 
 # Notification settings
 notifications:

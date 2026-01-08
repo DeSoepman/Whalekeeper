@@ -318,8 +318,8 @@ async def check_container(data: Dict, session_data: str = Depends(require_auth))
             raise HTTPException(status_code=400, detail="Missing container_name")
         
         if check_only:
-            # Just check for updates, don't apply them
-            update_info = monitor.check_container_for_update(container_name)
+            # Just check for updates, don't apply them (no email notifications)
+            update_info = monitor.check_container_for_update(container_name, send_notifications=False)
             
             if update_info:
                 return {

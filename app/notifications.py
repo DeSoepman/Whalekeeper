@@ -21,27 +21,15 @@ class NotificationService:
         """Send notifications via all enabled channels
         
         notification_type can be: 'update_found', 'no_updates', 'success', 'error'
+        Note: Email preferences are now checked at the source (batch/rollback calls)
         """
         
-        # Check email preferences
+        # Send email if enabled (preferences already checked by caller)
         if self.config.notifications.email.enabled:
-            should_send_email = False
-            email_config = self.config.notifications.email
-            
-            if notification_type == "update_found" and email_config.notify_on_update_found:
-                should_send_email = True
-            elif notification_type == "no_updates" and email_config.notify_on_no_updates:
-                should_send_email = True
-            elif notification_type == "success" and email_config.notify_on_success:
-                should_send_email = True
-            elif notification_type == "error" and email_config.notify_on_error:
-                should_send_email = True
-            
-            if should_send_email:
-                try:
-                    self.send_email(title, message, update_info)
-                except Exception as e:
-                    logger.error(f"Email notification failed: {e}")
+            try:
+                self.send_email(title, message, update_info)
+            except Exception as e:
+                logger.error(f"Email notification failed: {e}")
         
         if self.config.notifications.discord.enabled:
             try:

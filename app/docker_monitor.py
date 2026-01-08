@@ -20,6 +20,24 @@ class DockerMonitor:
         self.client = docker.from_env()
         self.running = False
     
+    def _get_image_version(self, image) -> str:
+        """Extract version from image labels or tags"""
+        try:
+            # Try to get version from OCI label
+            if image.labels and 'org.opencontainers.image.version' in image.labels:
+                return image.labels['org.opencontainers.image.version']
+            
+            # Fall back to tag if it looks like a version
+            if image.tags:
+                tag = image.tags[0].split(':')[-1]
+                if tag and tag != 'latest':
+                    return tag
+            
+            # Return image ID as fallback
+            return image.id[:12]
+        except Exception:
+            return image.id[:12]
+    
     def get_monitored_containers(self) -> List[docker.models.containers.Container]:
         """Get list of containers to monitor based on configuration"""
         all_containers = self.client.containers.list()
@@ -122,7 +140,16 @@ class DockerMonitor:
         new_image = update_info['new_image']
         image_name = update_info['image_name']
         
+        # Check if this is a self-update
+        is_self_update = container.name == 'whalekeeper'
+        
         try:
+            # For self-updates, add delay without notification
+            if is_self_update and self.config.monitoring.allow_self_update:
+                delay = self.config.monitoring.self_update_delay
+                logger.info(f"Self-update detected. Waiting {delay} seconds before updating...")
+                await asyncio.sleep(delay)
+            
             # Save current configuration for rollback
             container_config = self.get_container_config(container)
             
@@ -183,8 +210,8 @@ class DockerMonitor:
                 message="Container updated successfully"
             )
             
-            # Send notification (only for individual updates, not batch)
-            if send_notification:
+            # Send notification (only for individual updates, not batch, and not for self-updates)
+            if send_notification and not is_self_update:
                 await self.notifier.send_notification(
                     title=f"Container Updated: {container.name}",
                     message=f"Successfully updated container {container.name}",
@@ -221,8 +248,8 @@ class DockerMonitor:
                 message=str(e)
             )
             
-            # Send failure notification (only for individual updates, not batch)
-            if send_notification:
+            # Send failure notification (only for individual updates, not batch, and not for self-updates)
+            if send_notification and not is_self_update:
                 await self.notifier.send_notification(
                     title=f"Update Failed: {container.name}",
                     message=f"Failed to update container {container.name}: {str(e)}",
@@ -272,7 +299,16 @@ class DockerMonitor:
                 pass
             
             # Get the old image (the version we're rolling back TO)
-            old_image = self.client.images.get(version['image_id'])
+            try:
+                old_image = self.client.images.get(version['image_id'])
+            except docker.errors.ImageNotFound:
+                # Image was pruned/deleted, try to pull it by tag
+                logger.info(f"Image {version['image_id'][:12]} not found locally, attempting to pull {version['image_name']}")
+                try:
+                    old_image = self.client.images.pull(version['image_name'])
+                except Exception as pull_error:
+                    raise Exception(f"Cannot rollback: Image {version['image_id'][:12]} not found locally and pull failed: {pull_error}")
+            
             config = version['container_config']
             
             # Find the best tag to use (prefer versioned tags over 'latest' or 'stable')
@@ -352,18 +388,19 @@ class DockerMonitor:
                 message=rollback_message
             )
             
-            # Send notification
-            await self.notifier.send_notification(
-                title=f"Container Rolled Back: {container_name}",
-                message=f"Successfully rolled back {container_name} to previous version",
-                update_info={
-                    "Container": container_name,
-                    "Image": best_tag,
-                    "Image Tag": version['image_tag'],
-                    "Saved On": version['created_at']
-                },
-                notification_type="success"
-            )
+            # Send notification if enabled
+            if self.config.notifications.email.notify_on_rollback:
+                await self.notifier.send_notification(
+                    title=f"Container Rolled Back: {container_name}",
+                    message=f"Successfully rolled back {container_name} to previous version",
+                    update_info={
+                        "Container": container_name,
+                        "Image": best_tag,
+                        "Image Tag": version['image_tag'],
+                        "Saved On": version['created_at']
+                    },
+                    notification_type="success"
+                )
             
             return {"success": True, "best_tag": best_tag}
             
@@ -427,6 +464,10 @@ class DockerMonitor:
     
     async def send_summary_notification(self, results: Dict):
         """Send a summary notification for all update checks"""
+        # Check if batch notifications are enabled
+        if not self.config.notifications.email.notify_on_batch_complete:
+            return
+        
         total_updates = len(results['updates_success']) + len(results['updates_failed'])
         
         if total_updates == 0 and len(results['no_updates']) == 0:
@@ -497,7 +538,7 @@ class DockerMonitor:
         except Exception as e:
             logger.error(f"Error checking container {container_name}: {e}")
     
-    def check_container_for_update(self, container_name: str) -> Optional[Dict]:
+    def check_container_for_update(self, container_name: str, send_notifications: bool = True) -> Optional[Dict]:
         """Check if a specific container has updates available (without updating)"""
         try:
             container = self.client.containers.get(container_name)
@@ -509,7 +550,7 @@ class DockerMonitor:
             
             update_info = self.check_for_updates(container)
             
-            # Log the check if no updates found
+            # Log the check
             if not update_info:
                 current_image = container.image
                 self.db.add_check_log(
@@ -519,31 +560,14 @@ class DockerMonitor:
                     current_image_id=current_image.id,
                     message="Checked for updates - already up to date"
                 )
-                
-                # Send notification if configured
-                import asyncio
-                asyncio.create_task(self.notifier.send_notification(
-                    title=f"No Updates Available: {container.name}",
-                    message=f"Container {container.name} is already running the latest version",
-                    update_info={
-                        "Container": container.name,
-                        "Current Image": current_image.tags[0] if current_image.tags else current_image.id[:12]
-                    },
-                    notification_type="no_updates"
-                ))
             else:
-                # Send notification about update found
-                import asyncio
-                asyncio.create_task(self.notifier.send_notification(
-                    title=f"Update Available: {container.name}",
-                    message=f"A new version is available for {container.name}",
-                    update_info={
-                        "Container": container.name,
-                        "Current Image": update_info['old_image'].tags[0] if update_info['old_image'].tags else update_info['old_image'].id[:12],
-                        "New Image": update_info['new_image'].tags[0] if update_info['new_image'].tags else update_info['new_image'].id[:12]
-                    },
-                    notification_type="update_found"
-                ))
+                # Check if this is a self-update
+                is_self_update = container.name == 'whalekeeper'
+                
+                # Only allow self-updates if enabled
+                if is_self_update and not self.config.monitoring.allow_self_update:
+                    logger.info("Self-update detected but disabled in configuration")
+                    return None
             
             return update_info
         
@@ -552,18 +576,6 @@ class DockerMonitor:
             return None
         except Exception as e:
             logger.error(f"Error checking container {container_name}: {e}")
-            
-            # Send error notification
-            import asyncio
-            asyncio.create_task(self.notifier.send_notification(
-                title=f"Error Checking Updates: {container_name}",
-                message=f"Failed to check for updates: {str(e)}",
-                update_info={
-                    "Container": container_name,
-                    "Error": str(e)
-                },
-                notification_type="error"
-            ))
             return None
     
     def get_container_image(self, container_name: str) -> str:
