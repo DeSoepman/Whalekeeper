@@ -4,7 +4,7 @@ services:
     container_name: whalekeeper
     restart: unless-stopped
     ports:
-      - "9090:8080"
+      - "5454:5454"
     volumes:
       # Mount Docker socket to manage containers
       - /var/run/docker.sock:/var/run/docker.sock

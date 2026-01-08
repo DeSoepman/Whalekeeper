@@ -57,7 +57,7 @@ rollback:
 # Web GUI settings
 web:
   host: "0.0.0.0"
-  port: 9090
+  port: 5454
   # Optional: Basic auth (leave empty to disable)
   username: ""
   password: ""

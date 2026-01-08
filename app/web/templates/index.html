@@ -936,10 +936,13 @@
                     <div class="form-group">
                         <label>Cron Schedule</label>
                         <input type="text" id="cron_schedule" name="cron_schedule" placeholder="0 22 * * 1">
+                        <div id="cron_description" style="margin-top: 8px; font-size: 13px; color: #a3a3a3;">
+                            <strong>Schedule:</strong> <span id="cron_text">Enter a cron expression</span>
+                        </div>
                         <small>Examples: "0 22 * * 1" (Mon 10PM), "0 */6 * * *" (Every 6h), "*/30 * * * *" (Every 30min)</small>
                     </div>
                     
-                    <h3>Monitoring</h3>
+                    <h3 style="margin-bottom: 15px;">Monitoring</h3>
                     <div class="form-group">
                         <label><input type="checkbox" id="monitor_all" name="monitoring.monitor_all"> Monitor All Containers</label>
                     </div>
@@ -948,7 +951,7 @@
                         <textarea id="exclude_containers" name="monitoring.exclude_containers" rows="3"></textarea>
                     </div>
                     
-                    <h3>Other Settings</h3>
+                    <h3 style="margin-bottom: 15px;">Other Settings</h3>
                     <div class="form-group">
                         <label>Keep Versions for Rollback</label>
                         <input type="number" id="keep_versions" name="rollback.keep_versions" min="1" max="10">

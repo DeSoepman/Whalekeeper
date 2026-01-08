@@ -59,7 +59,7 @@ services:
     container_name: whalekeeper
     restart: unless-stopped
     ports:
-      - "9090:8080"
+      - "5454:5454"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # Required for Docker access
       - ./config:/app/config                        # Configuration
@@ -89,7 +89,7 @@ Open `http://localhost:9090` in your browser
 ```bash
 docker run -d \
   --name whalekeeper \
-  -p 9090:8080 \
+  -p 5454:5454 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/data:/app/data \
@@ -167,7 +167,7 @@ rollback:
 
 # Web interface
 web:
-  port: 8080
+  port: 5454
 ```
 
 ### Cron Schedule Examples
@@ -270,7 +270,7 @@ services:
     container_name: whalekeeper
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9090:8080"  # Only allow local access
+      - "127.0.0.1:9090:5454"  # Only allow local access
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only socket
       - ./config:/app/config

@@ -51,7 +51,7 @@ class RollbackConfig(BaseModel):
 
 class WebConfig(BaseModel):
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 5454
     username: str = ""
     password: str = ""
 

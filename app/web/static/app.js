@@ -534,6 +534,95 @@ async function waitForServer() {
     // If we get here, server didn't come back - reload anyway
 }
 
+// Cron schedule translator
+function translateCron(cronExpression) {
+    if (!cronExpression || !cronExpression.trim()) return null;
+    
+    const parts = cronExpression.trim().split(/\s+/);
+    if (parts.length !== 5) return 'Invalid cron format (should be 5 parts: minute hour day month weekday)';
+    
+    const [minute, hour, day, month, weekday] = parts;
+    
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    
+    let description = 'At ';
+    
+    // Time
+    if (minute === '*' && hour === '*') {
+        description = 'Every minute';
+    } else if (minute.startsWith('*/') && hour === '*') {
+        description = `Every ${minute.substring(2)} minutes`;
+    } else if (hour.startsWith('*/') && minute === '*') {
+        description = `Every ${hour.substring(2)} hours`;
+    } else if (hour.startsWith('*/')) {
+        const h = hour.substring(2);
+        const m = minute === '*' ? '00' : minute.padStart(2, '0');
+        description = `Every ${h} hours at minute ${m}`;
+    } else {
+        const h = hour === '*' ? 'every hour' : hour.padStart(2, '0');
+        const m = minute === '*' ? 'every minute' : minute.padStart(2, '0');
+        if (hour === '*') {
+            description = `At minute ${m} of every hour`;
+        } else {
+            description += `${h}:${m}`;
+        }
+    }
+    
+    // Day of month
+    if (day !== '*') {
+        description += ` on day ${day}`;
+    }
+    
+    // Month
+    if (month !== '*') {
+        const monthNum = parseInt(month) - 1;
+        if (monthNum >= 0 && monthNum < 12) {
+            description += ` in ${months[monthNum]}`;
+        } else {
+            description += ` in month ${month}`;
+        }
+    }
+    
+    // Day of week
+    if (weekday !== '*') {
+        const dayNum = parseInt(weekday);
+        if (dayNum >= 0 && dayNum <= 6) {
+            description += day === '*' && month === '*' ? ` on ${weekdays[dayNum]}` : ` (${weekdays[dayNum]})`;
+        } else {
+            description += ` on day ${weekday}`;
+        }
+    }
+    
+    return description;
+}
+
+function updateCronDescription() {
+    const cronInput = document.getElementById('cron_schedule');
+    const cronText = document.getElementById('cron_text');
+    
+    if (!cronInput || !cronText) return;
+    
+    const description = translateCron(cronInput.value);
+    
+    if (description) {
+        cronText.textContent = description;
+    } else {
+        cronText.textContent = 'Enter a cron expression';
+    }
+}
+
+// Add event listener for cron schedule input
+setTimeout(() => {
+    const cronInput = document.getElementById('cron_schedule');
+    if (cronInput) {
+        cronInput.addEventListener('input', updateCronDescription);
+        cronInput.addEventListener('blur', updateCronDescription);
+        // Update on initial load
+        updateCronDescription();
+    }
+}, 100);
+
 // Initial load
 refreshData();
 
@@ -617,6 +706,9 @@ async function loadConfig() {
     
     // Basic settings
     document.getElementById('cron_schedule').value = config.cron_schedule || '';
+    
+    // Update cron description after loading the value
+    updateCronDescription();
     
     // Monitoring
     document.getElementById('monitor_all').checked = config.monitoring?.monitor_all || false;
