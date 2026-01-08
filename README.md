@@ -76,7 +76,7 @@ docker compose up -d
 
 3. **Access the web interface:**
 
-Open `http://localhost:9090` in your browser
+Open `http://localhost:5454` in your browser
 
 4. **Complete first-run setup:**
 
@@ -270,7 +270,7 @@ services:
     container_name: whalekeeper
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9090:5454"  # Only allow local access
+      - "127.0.0.1:5454:5454"  # Only allow local access
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only socket
       - ./config:/app/config

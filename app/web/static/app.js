@@ -740,7 +740,7 @@ async function loadConfig() {
     
     // Other
     document.getElementById('keep_versions').value = config.rollback?.keep_versions || 3;
-    document.getElementById('web_port').value = config.web?.port || 9090;
+    document.getElementById('web_port').value = config.web?.port || 5454;
 }
 
 // Save configuration
@@ -783,7 +783,7 @@ document.getElementById('config-form').addEventListener('submit', async function
             keep_versions: parseInt(document.getElementById('keep_versions').value) || 3
         },
         web: {
-            port: parseInt(document.getElementById('web_port').value) || 9090
+            port: parseInt(document.getElementById('web_port').value) || 5454
         }
     };
     

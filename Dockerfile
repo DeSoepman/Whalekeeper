@@ -25,7 +25,7 @@ COPY VERSION ./VERSION
 RUN mkdir -p /app/data
 
 # Expose web interface port
-EXPOSE 9090
+EXPOSE 5454
 
 # Run the application
 CMD ["python", "-m", "app.main"]
