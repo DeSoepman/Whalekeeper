@@ -650,7 +650,7 @@ class DockerMonitor:
     
     async def self_check_loop(self):
         """Periodically check if whalekeeper itself has updates (without auto-updating)"""
-        logger.info("Starting whalekeeper self-check loop (every 1 hour)")
+        logger.info("Starting whalekeeper self-check loop (daily)")
         
         # Check immediately on startup
         await asyncio.sleep(10)  # Wait 10s for app to fully start
@@ -663,5 +663,5 @@ class DockerMonitor:
             except Exception as e:
                 logger.error(f"Error in whalekeeper self-check: {e}")
             
-            # Wait 1 hour before next check
-            await asyncio.sleep(3600)
+            # Wait 24 hours before next check
+            await asyncio.sleep(86400)
