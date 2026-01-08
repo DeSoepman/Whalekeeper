@@ -738,10 +738,8 @@ async function loadConfig() {
     document.getElementById('to_addresses').value = (config.notifications?.email?.to_addresses || []).join('\n');
     
     // Email preferences
-    document.getElementById('notify_on_update_found').checked = config.notifications?.email?.notify_on_update_found !== false;
-    document.getElementById('notify_on_no_updates').checked = config.notifications?.email?.notify_on_no_updates || false;
-    document.getElementById('notify_on_success').checked = config.notifications?.email?.notify_on_success !== false;
-    document.getElementById('notify_on_error').checked = config.notifications?.email?.notify_on_error !== false;
+    document.getElementById('notify_on_batch_complete').checked = config.notifications?.email?.notify_on_batch_complete !== false;
+    document.getElementById('notify_on_rollback').checked = config.notifications?.email?.notify_on_rollback !== false;
     
     // Discord
     document.getElementById('discord_enabled').checked = config.notifications?.discord?.enabled || false;
@@ -778,10 +776,8 @@ document.getElementById('config-form').addEventListener('submit', async function
                 from_address: document.getElementById('from_address').value,
                 to_addresses: document.getElementById('to_addresses').value
                     .split('\n').filter(x => x.trim()),
-                notify_on_update_found: document.getElementById('notify_on_update_found').checked,
-                notify_on_no_updates: document.getElementById('notify_on_no_updates').checked,
-                notify_on_success: document.getElementById('notify_on_success').checked,
-                notify_on_error: document.getElementById('notify_on_error').checked
+                notify_on_batch_complete: document.getElementById('notify_on_batch_complete').checked,
+                notify_on_rollback: document.getElementById('notify_on_rollback').checked
             },
             discord: {
                 enabled: document.getElementById('discord_enabled').checked,
@@ -833,10 +829,8 @@ document.getElementById('notification-form').addEventListener('submit', async fu
             from_address: document.getElementById('from_address').value,
             to_addresses: document.getElementById('to_addresses').value
                 .split('\n').filter(x => x.trim()),
-            notify_on_update_found: document.getElementById('notify_on_update_found').checked,
-            notify_on_no_updates: document.getElementById('notify_on_no_updates').checked,
-            notify_on_success: document.getElementById('notify_on_success').checked,
-            notify_on_error: document.getElementById('notify_on_error').checked
+            notify_on_batch_complete: document.getElementById('notify_on_batch_complete').checked,
+            notify_on_rollback: document.getElementById('notify_on_rollback').checked
         },
         discord: {
             enabled: document.getElementById('discord_enabled').checked,

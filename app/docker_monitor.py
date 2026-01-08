@@ -620,6 +620,9 @@ class DockerMonitor:
         self.running = True
         logger.info(f"Starting monitoring loop (cron: {self.config.cron_schedule})")
         
+        # Start self-check loop in background
+        asyncio.create_task(self.self_check_loop())
+        
         # Create cron iterator
         cron = croniter(self.config.cron_schedule, datetime.now())
         
@@ -644,3 +647,21 @@ class DockerMonitor:
         """Stop the monitoring loop"""
         self.running = False
         logger.info("Stopping monitoring loop")
+    
+    async def self_check_loop(self):
+        """Periodically check if whalekeeper itself has updates (without auto-updating)"""
+        logger.info("Starting whalekeeper self-check loop (every 1 hour)")
+        
+        # Check immediately on startup
+        await asyncio.sleep(10)  # Wait 10s for app to fully start
+        
+        while self.running:
+            try:
+                # Check if whalekeeper has updates (don't send notifications, don't update)
+                self.check_container_for_update('whalekeeper', send_notifications=False)
+                logger.info("Whalekeeper self-check complete")
+            except Exception as e:
+                logger.error(f"Error in whalekeeper self-check: {e}")
+            
+            # Wait 1 hour before next check
+            await asyncio.sleep(3600)
