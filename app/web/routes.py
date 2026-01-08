@@ -249,8 +249,9 @@ async def get_versions(container_name: str, session_data: str = Depends(require_
                         version['display_tag'] = version['image_tag']
                 else:
                     version['display_tag'] = version['image_tag']
-            except:
-                # If image is not found, use original tag
+            except Exception as e:
+                # If image is not found or can't be inspected, use original tag
+                logger.debug(f"Could not get labels for image {version['image_id'][:12]}: {e}")
                 version['display_tag'] = version['image_tag']
         
         return versions

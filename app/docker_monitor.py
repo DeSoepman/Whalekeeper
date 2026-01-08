@@ -449,8 +449,8 @@ class DockerMonitor:
                 if success:
                     results['updates_success'].append({
                         'name': container.name,
-                        'old_image': update_info['old_image'].tags[0] if update_info['old_image'].tags else update_info['old_image'].id[:12],
-                        'new_image': update_info['new_image'].tags[0] if update_info['new_image'].tags else update_info['new_image'].id[:12]
+                        'old_image': self._get_image_version(update_info['old_image']),
+                        'new_image': self._get_image_version(update_info['new_image'])
                     })
                 else:
                     results['updates_failed'].append(container.name)
