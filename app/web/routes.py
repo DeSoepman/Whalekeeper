@@ -165,17 +165,17 @@ async def index(request: Request, session: Optional[str] = Cookie(None)):
 
 
 @router.get("/api/version")
-async def get_version(session_data: str = Depends(require_auth)):
-    """Get application version"""
+async def get_version():
+    """Get application version (public endpoint)"""
     try:
         version_file = Path("VERSION")
         if version_file.exists():
             version = version_file.read_text().strip()
-            return {"version": f"v{version}"}
-        return {"version": "v1.0.0"}
+            return {"version": version}
+        return {"version": "1.0.0"}
     except Exception as e:
         logger.error(f"Error reading version: {e}")
-        return {"version": "v1.0.0"}
+        return {"version": "1.0.0"}
 
 
 @router.get("/api/containers")
@@ -204,7 +204,9 @@ async def get_containers(session_data: str = Depends(require_auth)):
                 "image": c.image.tags[0] if c.image.tags else c.image.id[:12],
                 "status": c.status,
                 "monitored": c.name not in exclude_list,
-                "version": version
+                "version": version,
+                "has_update": monitor.has_update(c.name),
+                "monitoring_active": bool(config.cron_schedule and config.cron_schedule.strip())
             })
         
         return containers
@@ -329,10 +331,18 @@ async def check_container(data: Dict, session_data: str = Depends(require_auth))
                     "new_image": update_info['new_image'].tags[0] if update_info['new_image'].tags else update_info['new_image'].id[:12]
                 }
             else:
-                return {
-                    "update_available": False,
-                    "current_image": monitor.get_container_image(container_name)
-                }
+                # Check if container exists and can be checked
+                try:
+                    current_image = monitor.get_container_image(container_name)
+                    return {
+                        "update_available": False,
+                        "current_image": current_image
+                    }
+                except Exception as e:
+                    return {
+                        "error": True,
+                        "message": f"Cannot check for updates: {str(e)}"
+                    }
         else:
             # Run check and update in background
             import asyncio
@@ -558,10 +568,6 @@ async def toggle_monitoring(container_name: str, data: Dict, session_data: str =
             # Disable monitoring - add to exclude list
             if container_name not in exclude_list:
                 exclude_list.append(container_name)
-            # Auto-uncheck "Monitor All Containers" when manually disabling containers
-            if 'monitoring' not in config_data:
-                config_data['monitoring'] = {}
-            config_data['monitoring']['monitor_all'] = False
         
         # Update config
         if 'monitoring' not in config_data:

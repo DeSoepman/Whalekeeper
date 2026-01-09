@@ -132,7 +132,6 @@ cron_schedule: "0 2 * * *"  # Daily at 2 AM
 
 # Container monitoring
 monitoring:
-  monitor_all: true           # Monitor all containers
   exclude_containers:         # Containers to skip
     - whalekeeper
     - portainer
@@ -203,29 +202,6 @@ The dashboard provides:
 - **Logs** - View complete update history
 - **Configuration** - Manage settings and monitoring preferences
 - **Test Notifications** - Verify email/Discord configuration
-
-### Container Selection
-
-**Monitor All Containers:**
-```yaml
-monitoring:
-  monitor_all: true
-  exclude_containers:
-    - whalekeeper  # Don't update yourself!
-```
-
-**Monitor Specific Containers:**
-```yaml
-monitoring:
-  monitor_all: false
-  exclude_containers: []  # Only monitored: containers with labels
-```
-
-Then add labels to containers you want monitored:
-```yaml
-labels:
-  - "autoupdate=true"
-```
 
 ### Manual Operations
 

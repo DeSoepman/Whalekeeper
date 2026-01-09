@@ -72,12 +72,27 @@ async function loadContainers() {
     const monitored = data.filter(c => c.monitored);
     const notMonitored = data.filter(c => !c.monitored);
     
+    // Get monitoring active status from first container (same for all)
+    const monitoringActive = data.length > 0 ? data[0].monitoring_active : false;
+    
+    // Update monitoring status display
+    const statusEl = document.getElementById('monitoring-status');
+    if (statusEl) {
+        if (monitoringActive) {
+            statusEl.textContent = '● Monitoring active';
+            statusEl.classList.remove('inactive');
+        } else {
+            statusEl.textContent = '● Monitoring not active';
+            statusEl.classList.add('inactive');
+        }
+    }
+    
     const renderContainer = (c) => 
         '<div class="container-card" data-container="' + c.name + '" data-monitored="' + c.monitored + '">' +
             '<div class="container-name">' +
                 '<span>' + c.name + '</span>' +
                 '<div style="display: flex; align-items: center; gap: 8px;">' +
-                    '<span class="container-status ' + (c.monitored ? '' : 'not-monitored') + '" title="' + (c.monitored ? 'Monitored' : 'Not Monitored') + '"></span>' +
+                    '<span class="container-status ' + (monitoringActive && c.monitored ? '' : 'not-monitored') + '" title="' + (monitoringActive && c.monitored ? 'Monitored' : 'Not Monitored') + '"></span>' +
                     '<span class="container-menu-icon" onclick="toggleContainerMenu(event, \'' + c.name + '\', ' + c.monitored + ')">⋮</span>' +
                 '</div>' +
             '</div>' +
@@ -249,7 +264,18 @@ async function checkContainer(containerName) {
                 
                 const result = await response.json();
                 
-                if (result.update_available) {
+                if (result.error) {
+                    // Step 3: Error checking for updates
+                    showModal(
+                        'Error Checking Updates',
+                        `Failed to check for updates on <strong>${containerName}</strong>.<br><br>` +
+                        `${result.message}`,
+                        'OK',
+                        () => closeModal(),
+                        false,
+                        true  // Hide cancel button
+                    );
+                } else if (result.update_available) {
                     // Step 3: Updates found - ask to update
                     showModal(
                         'Update Available',
@@ -724,7 +750,6 @@ async function loadConfig() {
     updateCronDescription();
     
     // Monitoring
-    document.getElementById('monitor_all').checked = config.monitoring?.monitor_all || false;
     document.getElementById('exclude_containers').value = (config.monitoring?.exclude_containers || []).join('\n');
     
     // Email
@@ -761,7 +786,6 @@ document.getElementById('config-form').addEventListener('submit', async function
     const formData = {
         cron_schedule: document.getElementById('cron_schedule').value,
         monitoring: {
-            monitor_all: document.getElementById('monitor_all').checked,
             exclude_containers: document.getElementById('exclude_containers').value
                 .split('\n').filter(x => x.trim())
         },

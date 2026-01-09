@@ -140,6 +140,11 @@
             font-weight: 600;
         }
         
+        .status.inactive {
+            background: #ff4444;
+            color: #ffffff;
+        }
+        
         .controls {
             background: #1a1a1a;
             padding: 20px;
@@ -877,7 +882,7 @@
     <div class="sidebar">
         <div class="sidebar-header">
             <h1>🐳 Whalekeeper</h1>
-            <span class="status">● Monitoring Active</span>
+            <span class="status" id="monitoring-status">● Monitoring active</span>
             <div class="hamburger" onclick="toggleMobileMenu()">
                 <span></span>
                 <span></span>
@@ -950,9 +955,6 @@
                     </div>
                     
                     <h3 style="margin-bottom: 15px;">Monitoring</h3>
-                    <div class="form-group">
-                        <label><input type="checkbox" id="monitor_all" name="monitoring.monitor_all"> Monitor All Containers</label>
-                    </div>
                     <div class="form-group">
                         <label>Exclude Containers (one per line)</label>
                         <textarea id="exclude_containers" name="monitoring.exclude_containers" rows="3"></textarea>

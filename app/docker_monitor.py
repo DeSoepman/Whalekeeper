@@ -19,6 +19,7 @@ class DockerMonitor:
         self.notifier = notifier
         self.client = docker.from_env()
         self.running = False
+        self.update_cache = {}  # Cache of containers with updates: {container_name: update_info}
     
     def _get_image_version(self, image) -> str:
         """Extract version from image labels or tags"""
@@ -38,24 +39,19 @@ class DockerMonitor:
         except Exception:
             return image.id[:12]
     
+    def has_update(self, container_name: str) -> bool:
+        """Check if a container has an update available (from cache)"""
+        return container_name in self.update_cache
+    
     def get_monitored_containers(self) -> List[docker.models.containers.Container]:
         """Get list of containers to monitor based on configuration"""
         all_containers = self.client.containers.list()
         
-        # Filter out excluded containers
+        # Filter out excluded containers (if no excludes, monitor all)
         containers = [
             c for c in all_containers 
             if c.name not in self.config.monitoring.exclude_containers
         ]
-        
-        # If not monitoring all, filter by labels
-        if not self.config.monitoring.monitor_all and self.config.monitoring.labels:
-            filtered = []
-            for container in containers:
-                container_labels = container.labels
-                if any(label in container_labels for label in self.config.monitoring.labels):
-                    filtered.append(container)
-            containers = filtered
         
         return containers
     
@@ -65,6 +61,19 @@ class DockerMonitor:
             # Get current image
             current_image = container.image
             image_name = container.attrs['Config']['Image']
+            
+            # If image_name is a sha256 digest or empty, get the actual repo name from image tags
+            if not image_name or image_name.startswith('sha256:') or image_name.strip() == '':
+                if current_image.tags:
+                    image_name = current_image.tags[0]
+                else:
+                    logger.warning(f"Container {container.name} has no image tags, cannot check for updates")
+                    return None
+            
+            # Validate image_name
+            if not image_name or image_name.strip() == '':
+                logger.warning(f"Container {container.name} has invalid image name, cannot check for updates")
+                return None
             
             # Handle image name without tag
             if ':' not in image_name:
@@ -133,6 +142,116 @@ class DockerMonitor:
             'devices': host_config.get('Devices'),
         }
     
+    def _build_docker_run_command(self, config: Dict, new_image_id: str) -> str:
+        """Build a docker run command from container configuration"""
+        cmd_parts = ['docker run -d']
+        
+        # Name
+        cmd_parts.append(f'--name {config["name"]}')
+        
+        # Environment variables
+        for env in config.get('environment', []):
+            cmd_parts.append(f'-e "{env}"')
+        
+        # Volumes
+        for volume in config.get('volumes', []):
+            cmd_parts.append(f'-v "{volume}"')
+        
+        # Ports
+        for container_port, host_bindings in config.get('ports', {}).items():
+            if host_bindings:
+                for binding in host_bindings:
+                    host_port = binding.get('HostPort')
+                    if host_port:
+                        cmd_parts.append(f'-p {host_port}:{container_port.split("/")[0]}')
+        
+        # Network mode
+        network_mode = config.get('network_mode')
+        if network_mode and network_mode != 'default':
+            cmd_parts.append(f'--network {network_mode}')
+        
+        # Restart policy
+        restart_policy = config.get('restart_policy', {})
+        if restart_policy.get('Name'):
+            policy = restart_policy['Name']
+            max_retry = restart_policy.get('MaximumRetryCount', 0)
+            if policy == 'on-failure' and max_retry:
+                cmd_parts.append(f'--restart {policy}:{max_retry}')
+            else:
+                cmd_parts.append(f'--restart {policy}')
+        
+        # Labels
+        for key, value in config.get('labels', {}).items():
+            cmd_parts.append(f'--label "{key}={value}"')
+        
+        # Image
+        cmd_parts.append(new_image_id)
+        
+        return ' '.join(cmd_parts)
+    
+    async def self_update(self, update_info: Dict) -> bool:
+        """Safely update whalekeeper using a helper container"""
+        try:
+            container = update_info['container']
+            new_image = update_info['new_image']
+            old_image = update_info['old_image']
+            
+            logger.info(f"Initiating self-update: {old_image.id[:12]} -> {new_image.id[:12]}")
+            
+            # Record self-update in database before container restarts
+            self.db.add_update_history(
+                container_name=container.name,
+                container_id=container.id,
+                old_image=old_image.tags[0] if old_image.tags else old_image.id[:12],
+                new_image=new_image.tags[0] if new_image.tags else new_image.id[:12],
+                old_image_id=old_image.id,
+                new_image_id=new_image.id,
+                status="success",
+                message="Self-update initiated - container will restart shortly"
+            )
+            
+            # Get current container config
+            config = self.get_container_config(container)
+            
+            # Use image tag instead of ID to preserve image name in recreated container
+            new_image_ref = new_image.tags[0] if new_image.tags else new_image.id
+            
+            # Build docker run command for recreating whalekeeper
+            run_cmd = self._build_docker_run_command(config, new_image_ref)
+            
+            # Create helper script that will update whalekeeper
+            helper_script = f'''#!/bin/sh
+echo "Helper: Installing docker CLI..."
+apk add --no-cache docker-cli > /dev/null 2>&1
+echo "Helper: Waiting 10 seconds before updating whalekeeper..."
+sleep 10
+echo "Helper: Stopping whalekeeper container..."
+docker stop whalekeeper || true
+echo "Helper: Removing whalekeeper container..."
+docker rm whalekeeper || true
+echo "Helper: Starting new whalekeeper container..."
+{run_cmd}
+echo "Helper: Whalekeeper updated successfully"
+'''
+            
+            # Run helper container with Docker socket access
+            logger.info("Spawning helper container for self-update...")
+            self.client.containers.run(
+                image='alpine:latest',
+                command=['sh', '-c', helper_script],
+                volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}},
+                remove=True,
+                detach=True,
+                name='whalekeeper-updater'
+            )
+            
+            logger.info("Self-update scheduled - Whalekeeper will restart in 10 seconds")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to schedule self-update: {e}")
+            return False
+    
     async def update_container(self, update_info: Dict, send_notification: bool = True) -> bool:
         """Update a container with the new image"""
         container = update_info['container']
@@ -140,15 +259,13 @@ class DockerMonitor:
         new_image = update_info['new_image']
         image_name = update_info['image_name']
         
-        # Check if this is a self-update
+        # Check if this is a self-update - use helper container approach
         is_self_update = container.name == 'whalekeeper'
         
+        if is_self_update:
+            return await self.self_update(update_info)
+        
         try:
-            # For self-updates, add delay without notification
-            if is_self_update and self.config.monitoring.allow_self_update:
-                delay = self.config.monitoring.self_update_delay
-                logger.info(f"Self-update detected. Waiting {delay} seconds before updating...")
-                await asyncio.sleep(delay)
             
             # Save current configuration for rollback
             container_config = self.get_container_config(container)
@@ -210,8 +327,8 @@ class DockerMonitor:
                 message="Container updated successfully"
             )
             
-            # Send notification (only for individual updates, not batch, and not for self-updates)
-            if send_notification and not is_self_update:
+            # Send notification (only for individual updates, not batch)
+            if send_notification:
                 await self.notifier.send_notification(
                     title=f"Container Updated: {container.name}",
                     message=f"Successfully updated container {container.name}",
@@ -248,8 +365,8 @@ class DockerMonitor:
                 message=str(e)
             )
             
-            # Send failure notification (only for individual updates, not batch, and not for self-updates)
-            if send_notification and not is_self_update:
+            # Send failure notification (only for individual updates, not batch)
+            if send_notification:
                 await self.notifier.send_notification(
                     title=f"Update Failed: {container.name}",
                     message=f"Failed to update container {container.name}: {str(e)}",
@@ -259,10 +376,6 @@ class DockerMonitor:
                     },
                     notification_type="error"
                 )
-            
-            return False
-    
-    async def rollback_container(self, container_name: str, version_id: int) -> bool:
         """Rollback a container to a previous version"""
         try:
             # Get the version info
@@ -423,10 +536,17 @@ class DockerMonitor:
     
     async def check_all_containers(self):
         """Check all monitored containers for updates"""
-        logger.info("Starting container update check")
-        
         containers = self.get_monitored_containers()
-        logger.info(f"Monitoring {len(containers)} containers")
+        
+        # Log start of batch check
+        self.db.add_check_log(
+            container_name="batch_check",
+            container_id="system",
+            current_image="",
+            current_image_id="",
+            message=f"Started checking {len(containers)} containers for updates"
+        )
+        logger.info(f"Started checking {len(containers)} containers for updates")
         
         # Track results for summary notification
         results = {
@@ -457,7 +577,16 @@ class DockerMonitor:
             else:
                 results['no_updates'].append(container.name)
         
-        logger.info("Container update check complete")
+        # Log end of batch check
+        updated_list = ', '.join([item['name'] for item in results['updates_success']]) if results['updates_success'] else 'none'
+        self.db.add_check_log(
+            container_name="batch_check",
+            container_id="system",
+            current_image="",
+            current_image_id="",
+            message=f"Finished checking {len(containers)} containers for updates, updated {len(results['updates_success'])} containers ({updated_list})"
+        )
+        logger.info(f"Finished checking {len(containers)} containers for updates, updated {len(results['updates_success'])} containers ({updated_list})")
         
         # Send summary notification
         await self.send_summary_notification(results)
@@ -543,31 +672,12 @@ class DockerMonitor:
         try:
             container = self.client.containers.get(container_name)
             
-            # Check if container should be monitored
-            if container.name in self.config.monitoring.exclude_containers:
+            # Check if container should be monitored (skip this check for whalekeeper self-check)
+            if container.name != 'whalekeeper' and container.name in self.config.monitoring.exclude_containers:
                 logger.warning(f"Container {container_name} is in exclude list")
                 return None
             
             update_info = self.check_for_updates(container)
-            
-            # Log the check
-            if not update_info:
-                current_image = container.image
-                self.db.add_check_log(
-                    container_name=container.name,
-                    container_id=container.id,
-                    current_image=current_image.tags[0] if current_image.tags else current_image.id[:12],
-                    current_image_id=current_image.id,
-                    message="Checked for updates - already up to date"
-                )
-            else:
-                # Check if this is a self-update
-                is_self_update = container.name == 'whalekeeper'
-                
-                # Only allow self-updates if enabled
-                if is_self_update and not self.config.monitoring.allow_self_update:
-                    logger.info("Self-update detected but disabled in configuration")
-                    return None
             
             return update_info
         
@@ -618,10 +728,16 @@ class DockerMonitor:
     async def start_monitoring(self):
         """Start the monitoring loop"""
         self.running = True
-        logger.info(f"Starting monitoring loop (cron: {self.config.cron_schedule})")
         
         # Start self-check loop in background
         asyncio.create_task(self.self_check_loop())
+        
+        # Only start cron monitoring if schedule is configured
+        if not self.config.cron_schedule or self.config.cron_schedule.strip() == '':
+            logger.info("No cron schedule configured - monitoring loop disabled")
+            return
+        
+        logger.info(f"Starting monitoring loop (cron: {self.config.cron_schedule})")
         
         # Create cron iterator
         cron = croniter(self.config.cron_schedule, datetime.now())
@@ -658,8 +774,18 @@ class DockerMonitor:
         while self.running:
             try:
                 # Check if whalekeeper has updates (don't send notifications, don't update)
-                self.check_container_for_update('whalekeeper', send_notifications=False)
-                logger.info("Whalekeeper self-check complete")
+                update_info = self.check_container_for_update('whalekeeper', send_notifications=False)
+                
+                # Store in cache for UI to display
+                if update_info:
+                    self.update_cache['whalekeeper'] = update_info
+                    logger.info("Whalekeeper self-check: Update available")
+                elif 'whalekeeper' in self.update_cache:
+                    # Clear from cache if no longer has update
+                    del self.update_cache['whalekeeper']
+                    logger.info("Whalekeeper self-check: Up to date")
+                else:
+                    logger.info("Whalekeeper self-check complete - already up to date")
             except Exception as e:
                 logger.error(f"Error in whalekeeper self-check: {e}")
             

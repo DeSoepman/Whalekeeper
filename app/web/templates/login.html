@@ -138,6 +138,18 @@
             font-weight: normal;
             color: #999999;
         }
+        
+        .version-info {
+            text-align: center;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #2a2a2a;
+        }
+        
+        .version-number {
+            color: #666666;
+            font-size: 13px;
+        }
     </style>
 </head>
 <body>
@@ -167,9 +179,26 @@
             
             <button type="submit" class="login-button" id="login-btn">Sign In</button>
         </form>
+        
+        <div class="version-info">
+            <div class="version-number" id="version-display">Loading...</div>
+        </div>
     </div>
     
     <script>
+        // Load version on page load
+        async function loadVersion() {
+            try {
+                const response = await fetch('/api/version');
+                const data = await response.json();
+                document.getElementById('version-display').textContent = `v${data.version}`;
+            } catch (error) {
+                document.getElementById('version-display').textContent = '';
+            }
+        }
+        
+        loadVersion();
+        
         const form = document.getElementById('login-form');
         const errorDiv = document.getElementById('error');
         const loginBtn = document.getElementById('login-btn');

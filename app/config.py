@@ -6,11 +6,7 @@ from pydantic_settings import BaseSettings
 
 
 class MonitoringConfig(BaseModel):
-    monitor_all: bool = True
-    labels: Optional[List[str]] = None
     exclude_containers: List[str] = []
-    allow_self_update: bool = True
-    self_update_delay: int = 30  # Delay in seconds before self-updating
 
 
 class EmailConfig(BaseModel):
