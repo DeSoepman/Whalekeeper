@@ -26,7 +26,7 @@ It's basically a self-hosted alternative to watchtower with a web UI and better 
 - Dashboard showing all containers and their versions
 - Update history with detailed logs
 - One-click rollback to any previous version
-- Live configuration changes (no restart required)
+- Configuration editor
 - Built-in authentication
 
 **Notifications:**
@@ -81,7 +81,7 @@ docker build -t whalekeeper:latest .
 
 ## Configuration
 
-Most settings can be changed through the web interface. The config file (`config/config.yaml`) is mainly for the update schedule and container exclusions.
+The config file (`config/config.yaml`) contains your settings. You can edit it through the web interface or manually.
 
 Example config:
 
@@ -104,7 +104,7 @@ web:
   port: 5454
 ```
 
-Notification settings (email, Discord, webhooks) are configured through the web UI and stored encrypted in the database.
+The SMTP password is stored encrypted in the database for security. Other settings are in the config file.
 
 ### Cron schedule examples
 
@@ -125,7 +125,7 @@ If you want email notifications with Gmail:
 3. Generate an app password
 4. Use that password in Whalekeeper's email settings (via web UI)
 
-SMTP passwords are stored encrypted in the database, not in the config file.
+The SMTP password is stored encrypted in the database, not in the config file.
 
 ## Usage
 
@@ -154,7 +154,7 @@ For example, if you update nginx and it crashes because of a bad config, it'll b
 
 ### Manual rollback
 
-Go to the Logs tab, click the menu next to any update, and select "Rollback to this version".
+On the Dashboard tab, use the Rollback section to select a container and a previous version, then click Rollback.
 
 ## Security
 
@@ -164,8 +164,8 @@ Go to the Logs tab, click the menu next to any update, and select "Rollback to t
 - Session-based auth with HTTP-only cookies
 
 **Credential storage:**
-- SMTP passwords are encrypted in the database
-- No plaintext secrets in config files
+- SMTP password is encrypted in the database
+- Other settings are in the config file
 
 **For production use:**
 
