@@ -1,56 +1,43 @@
-# 🐳 Whalekeeper
+# Whalekeeper
 
-<p align="center">
-  <strong>Keep your Docker containers fresh and up-to-date, automatically.</strong>
-</p>
+Automatic Docker container updates with health checks and rollback support.
 
-<p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-installation">Installation</a> •
-  <a href="#-configuration">Configuration</a> •
-  <a href="#-usage">Usage</a> •
-  <a href="#-security">Security</a>
-</p>
+## What is this?
 
----
+Whalekeeper monitors your Docker containers for image updates and automatically updates them on a schedule you define. If something goes wrong after an update, it automatically rolls back to the previous version.
 
-## 📋 Overview
+It's basically a self-hosted alternative to watchtower with a web UI and better safety features.
 
-Whalekeeper is a self-hosted Docker container management tool that automatically monitors your containers for image updates, updates them with zero configuration hassle, and keeps you informed through multiple notification channels. With a clean web interface, rollback support, and enterprise-grade security, it's the set-it-and-forget-it solution for keeping your Docker infrastructure current.
+## Features
 
-## ✨ Features
+**Updates:**
+- Automatic update checks on a cron schedule
+- Manual updates via web interface
+- Exclude specific containers from updates
+- Keeps previous image versions for rollback
 
-### Core Functionality
-- 🔄 **Automatic Updates** - Monitor containers on your schedule (cron-based)
-- 🎯 **Smart Selection** - Monitor all containers or cherry-pick specific ones
-- 🔙 **Rollback Support** - Instantly revert to previous image versions
-- 📊 **Update History** - Track all updates with detailed logs
-- 🏷️ **Version Detection** - Extracts and displays container versions from image labels
+**Health & Safety:**
+- Monitors containers after updates using Docker health checks
+- Automatically rolls back if container crashes or fails health checks
+- No configuration needed - just works with your existing health checks
+- Falls back to crash detection if no health check is defined
 
-### Web Interface
-- 🖥️ **Modern Dashboard** - Clean, responsive UI with real-time status
-- 🔐 **Secure Authentication** - Session-based login with bcrypt password hashing
-- ⚙️ **Live Configuration** - Update settings without restarting
-- 📧 **Test Notifications** - Verify email/Discord settings instantly
+**Web Interface:**
+- Dashboard showing all containers and their versions
+- Update history with detailed logs
+- One-click rollback to any previous version
+- Live configuration changes (no restart required)
+- Built-in authentication
 
-### Notifications
-- 📧 **Email (SMTP)** - Styled HTML emails with update details
-- 💬 **Discord** - Webhook notifications with rich embeds
-- 🔗 **Custom Webhooks** - Integrate with your own systems
-- 🎨 **Customizable** - Control which events trigger notifications
+**Notifications:**
+- Email (SMTP)
+- Discord webhooks
+- Custom webhooks
+- Configurable for different events
 
-### Security & Reliability
-- 🔒 **Database-secured credentials** - SMTP passwords encrypted in SQLite
-- 👤 **First-run registration** - Create admin account on first launch
-- 🛡️ **Session security** - HTTP-only cookies with configurable expiry
-- 📦 **Docker Compose detection** - Prevents conflicts with compose-managed containers
+## Quick Start
 
-## 🚀 Quick Start
-
-### Using Docker Compose (Recommended)
-
-1. **Create docker-compose.yml:**
+Create a `docker-compose.yml`:
 
 ```yaml
 services:
@@ -61,70 +48,42 @@ services:
     ports:
       - 5454:5454
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock  # Required for Docker access
-      - ./config:/app/config                        # Configuration
-      - ./data:/app/data                            # Database
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config:/app/config
+      - ./data:/app/data
     environment:
-      - TZ=Europe/Brussels  # Set your timezone
+      - TZ=Europe/Brussels
 ```
 
-2. **Start the container:**
+Start it:
 
 ```bash
 docker compose up -d
 ```
 
-3. **Access the web interface:**
+Open http://localhost:5454 and create your admin account.
 
-Open `http://localhost:5454` in your browser
+That's it. Whalekeeper will start monitoring your containers based on the schedule you configure in the web UI.
 
-4. **Complete first-run setup:**
+## Installation
 
-- Create your admin account
-- Configure notification settings
-- Select containers to monitor
-
-### Using Docker CLI
-
-```bash
-docker run -d \
-  --name whalekeeper \
-  -p 5454:5454 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v $(pwd)/config:/app/config \
-  -v $(pwd)/data:/app/data \
-  -e TZ=Europe/Brussels \
-  --restart unless-stopped \
-  desoepman/whalekeeper:latest
-```
-
-## 📦 Installation
-
-### Option 1: Docker Hub
-
+Pull from Docker Hub:
 ```bash
 docker pull desoepman/whalekeeper:latest
 ```
 
-### Option 2: GitHub Container Registry
-
-```bash
-docker pull ghcr.io/desoepman/whalekeeper:latest
-```
-
-### Option 3: Build from Source
-
+Or build from source:
 ```bash
 git clone https://github.com/desoepman/whalekeeper.git
 cd whalekeeper
 docker build -t whalekeeper:latest .
 ```
 
-## ⚙️ Configuration
+## Configuration
 
-Whalekeeper uses a simple YAML configuration file. Most settings can be managed through the web interface.
+Most settings can be changed through the web interface. The config file (`config/config.yaml`) is mainly for the update schedule and container exclusions.
 
-### config.yaml
+Example config:
 
 ```yaml
 # Update check schedule (cron format)
@@ -132,112 +91,85 @@ cron_schedule: "0 2 * * *"  # Daily at 2 AM
 
 # Container monitoring
 monitoring:
-  exclude_containers:         # Containers to skip
+  exclude_containers:
     - whalekeeper
     - portainer
 
-# Notifications
-notifications:
-  email:
-    enabled: true
-    smtp_host: smtp.gmail.com
-    smtp_port: 587
-    use_tls: true
-    username: your-email@gmail.com
-    # Password stored securely in database
-    from_address: your-email@gmail.com
-    to_addresses:
-      - recipient@example.com
-    notify_on_update_found: true
-    notify_on_success: true
-    notify_on_error: true
-  
-  discord:
-    enabled: false
-    webhook_url: https://discord.com/api/webhooks/...
-  
-  webhook:
-    enabled: false
-    url: https://your-webhook-endpoint.com/notify
-
 # Rollback settings
 rollback:
-  keep_versions: 3  # Number of previous versions to keep
+  keep_versions: 3
 
 # Web interface
 web:
   port: 5454
 ```
 
-### Cron Schedule Examples
+Notification settings (email, Discord, webhooks) are configured through the web UI and stored encrypted in the database.
 
-```yaml
-"*/30 * * * *"   # Every 30 minutes
-"0 */6 * * *"    # Every 6 hours
-"0 2 * * *"      # Daily at 2 AM
-"0 2 * * 1"      # Every Monday at 2 AM
-"0 0 1 * *"      # First day of each month
+### Cron schedule examples
+
+```
+*/30 * * * *   Every 30 minutes
+0 */6 * * *    Every 6 hours
+0 2 * * *      Daily at 2 AM
+0 2 * * 1      Every Monday at 2 AM
+0 0 1 * *      First day of each month
 ```
 
-### Email Configuration (Gmail Example)
+### Gmail setup
 
-For Gmail, you'll need an App Password:
+If you want email notifications with Gmail:
 
-1. Enable 2-factor authentication on your Google account
-2. Go to [App Passwords](https://myaccount.google.com/apppasswords)
-3. Generate a password for "Mail"
-4. Use this password in Whalekeeper's email settings
+1. Enable 2FA on your Google account
+2. Go to https://myaccount.google.com/apppasswords
+3. Generate an app password
+4. Use that password in Whalekeeper's email settings (via web UI)
 
-**Note:** SMTP passwords are stored encrypted in the database, not in the config file.
+SMTP passwords are stored encrypted in the database, not in the config file.
 
-## 📖 Usage
+## Usage
 
-### Web Interface
+### Web interface
 
-The dashboard provides:
+The dashboard shows all your containers with their current versions. From there you can:
 
-- **Container Overview** - View all monitored containers with current versions
-- **Manual Updates** - Trigger update checks or update individual containers
-- **Rollback** - Revert containers to previous image versions
-- **Logs** - View complete update history
-- **Configuration** - Manage settings and monitoring preferences
-- **Test Notifications** - Verify email/Discord configuration
+- Manually trigger update checks
+- Update individual containers
+- Rollback to previous versions
+- View update history
+- Change settings
+- Test your notification setup
 
-### Manual Operations
+### Health checks and auto-rollback
 
-**Check for updates now:**
-- Click "Check Now" in the dashboard
-- Or restart a specific container to pull latest image
+After updating a container, Whalekeeper monitors it to make sure it's actually working. No configuration needed.
 
-**Rollback a container:**
-- Navigate to Logs tab
-- Click the menu icon (⋮) next to any update
-- Select "Rollback to this version"
+How it works:
+- If the container has a HEALTHCHECK defined, it waits for Docker to report it as healthy (up to 10 minutes)
+- If no HEALTHCHECK exists, it just watches for crashes/restarts for 2 minutes
 
-## 🔐 Security
+If something goes wrong (container crashes, health check fails, repeated restarts), Whalekeeper automatically rolls back to the previous version and sends you a notification.
 
-Whalekeeper takes security seriously:
+For example, if you update nginx and it crashes because of a bad config, it'll be rolled back within seconds automatically.
 
-### Authentication
-- **First-run registration** - Set up admin account on first launch
-- **Bcrypt password hashing** - Industry-standard password security
-- **Session-based auth** - Secure HTTP-only cookies
-- **Auto-logout** - Configurable session expiry (30 days default)
+### Manual rollback
 
-### Credential Storage
-- **Database encryption** - SMTP passwords stored encrypted in SQLite
-- **No plaintext secrets** - Sensitive data never stored in config files
-- **Environment isolation** - No environment variables for credentials
+Go to the Logs tab, click the menu next to any update, and select "Rollback to this version".
 
-### Best Practices
-- Always use strong passwords (minimum 8 characters)
-- Keep Whalekeeper updated to the latest version
-- Restrict network access to the web interface (use reverse proxy with SSL)
-- Regularly review update logs for unexpected changes
+## Security
 
-### Production Deployment
+**Authentication:**
+- First-run registration (create admin account on first launch)
+- Bcrypt password hashing
+- Session-based auth with HTTP-only cookies
 
-For production use, consider:
+**Credential storage:**
+- SMTP passwords are encrypted in the database
+- No plaintext secrets in config files
+
+**For production use:**
+
+Bind to localhost and use a reverse proxy:
 
 ```yaml
 services:
@@ -246,79 +178,38 @@ services:
     container_name: whalekeeper
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5454:5454"  # Only allow local access
+      - "127.0.0.1:5454:5454"  # Only localhost
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only socket
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only
       - ./config:/app/config
       - ./data:/app/data
-    networks:
-      - internal
 ```
 
-Then use a reverse proxy (nginx, Caddy, Traefik) with SSL for external access.
+Then use nginx/Caddy/Traefik with SSL for external access.
 
-## 🎨 Screenshots
+## Contributing
 
-<!-- Add screenshots here -->
-<!-- Example: -->
-<!-- ![Dashboard](docs/images/dashboard.png) -->
-<!-- ![Logs](docs/images/logs.png) -->
+Bug reports and pull requests are welcome on GitHub.
 
-## 🤝 Contributing
+## License
 
-Contributions are welcome! Feel free to:
+MIT License - see LICENSE file for details.
 
-- Report bugs or request features via [Issues](https://github.com/desoepman/whalekeeper/issues)
-- Submit Pull Requests
-- Improve documentation
-- Share your deployment experiences
+## Development
 
-## 📝 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 💬 Support
-
-- **Issues**: [GitHub Issues](https://github.com/desoepman/whalekeeper/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/desoepman/whalekeeper/discussions)
-
-## 🧪 Development & Testing
-
-### Running Tests
-
-Whalekeeper includes a comprehensive test suite to ensure reliability.
-
-**Install test dependencies:**
+Run tests:
 ```bash
 pip install -r requirements-dev.txt
+./test.sh
 ```
 
-**Run all tests:**
+Or manually:
 ```bash
-./test.sh
-# or
 python3 -m pytest tests/ -v
 ```
 
-**Run tests with coverage:**
+Build:
 ```bash
-python3 -m pytest tests/ --cov=app --cov-report=html
+./build.sh  # Runs tests first
 ```
-
-**Build with tests:**
-```bash
-./build.sh  # Runs tests first, then builds Docker image
-```
-
-See [tests/README.md](tests/README.md) for more testing details.
-
-## 🌟 Show Your Support
-
-If you find Whalekeeper useful, give it a ⭐ on GitHub!
-
----
-
-<p align="center">
-  Made with 🐳 by the Whalekeeper team
-</p>
 

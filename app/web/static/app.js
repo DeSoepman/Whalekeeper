@@ -303,18 +303,36 @@ async function checkContainer(containerName) {
                             
                             const updateResult = await updateResponse.json();
                             
-                            // Step 5: Show result
-                            showModal(
-                                updateResult.success ? 'Update Successful' : 'Update Failed',
-                                updateResult.message,
-                                'OK',
-                                () => {
-                                    closeModal();
-                                    refreshData();
-                                },
-                                false,
-                                true  // Hide cancel button
-                            );
+                            // Check if this is a self-update (whalekeeper updating itself)
+                            const isSelfUpdate = containerName.toLowerCase() === 'whalekeeper';
+                            
+                            if (isSelfUpdate && updateResult.success) {
+                                // Special handling for self-update
+                                showModal(
+                                    'Whalekeeper Updated',
+                                    '<div><span class="loading-spinner"></span>Whalekeeper is restarting with the new version...<br><br>The page will reload automatically when ready.</div>',
+                                    null,
+                                    null,
+                                    true
+                                );
+                                
+                                // Wait for server to restart and reload page
+                                await waitForServer();
+                                window.location.reload();
+                            } else {
+                                // Step 5: Show result for normal containers
+                                showModal(
+                                    updateResult.success ? 'Update Successful' : 'Update Failed',
+                                    updateResult.message,
+                                    'OK',
+                                    () => {
+                                        closeModal();
+                                        refreshData();
+                                    },
+                                    false,
+                                    true  // Hide cancel button
+                                );
+                            }
                         }
                     );
                 } else {
@@ -466,7 +484,7 @@ async function performRollback() {
                 const result = await response.json();
                 
                 // Step 3: Show result
-                let message = result.message;
+                let message = result.message || result.detail || 'An unknown error occurred';
                 
                 // Add compose file instruction if this is a compose-managed container
                 if (result.success && result.is_compose && result.image_name) {

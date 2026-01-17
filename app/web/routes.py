@@ -307,8 +307,8 @@ async def check_container(data: Dict, session_data: str = Depends(require_auth))
             if update_info:
                 return {
                     "update_available": True,
-                    "current_image": update_info['image_name'],
-                    "new_image": update_info['new_image'].tags[0] if update_info['new_image'].tags else update_info['new_image'].id[:12]
+                    "current_image": monitor._get_image_version(update_info['old_image']),
+                    "new_image": monitor._get_image_version(update_info['new_image'])
                 }
             else:
                 # Check if container exists and can be checked
@@ -396,7 +396,8 @@ async def rollback(data: Dict, session_data: str = Depends(require_auth)):
                 "is_compose": is_compose
             }
         else:
-            return {"success": False, "message": f"Failed to rollback {container_name}"}
+            error_msg = result.get("error", "Unknown error occurred")
+            return {"success": False, "message": f"Failed to rollback {container_name}: {error_msg}"}
             
     except Exception as e:
         logger.error(f"Error during rollback: {e}")

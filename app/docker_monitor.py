@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Optional
 from datetime import datetime
 from croniter import croniter
+import time
 
 from app.config import Config
 from app.database import Database
@@ -284,6 +285,138 @@ echo "Helper: Whalekeeper updated successfully"
             logger.error(f"Failed to schedule self-update: {e}")
             return False
     
+    async def monitor_container_health(self, container_name: str, old_image_id: str) -> tuple[bool, str]:
+        """
+        Monitor container health after update.
+        Returns (is_healthy, failure_reason)
+        
+        Uses Docker HEALTHCHECK if available, otherwise monitors for crashes for 2 minutes.
+        """
+        try:
+            container = self.client.containers.get(container_name)
+            container.reload()
+            
+            # Check if container has a HEALTHCHECK defined
+            has_healthcheck = False
+            if container.attrs.get('Config', {}).get('Healthcheck'):
+                has_healthcheck = True
+            
+            if has_healthcheck:
+                # Container has HEALTHCHECK - wait for it to become healthy
+                logger.info(f"Monitoring {container_name} using Docker HEALTHCHECK (max 10 minutes)")
+                max_wait_time = 600  # 10 minutes max
+                check_interval = 5
+                elapsed = 0
+                
+                while elapsed < max_wait_time:
+                    container.reload()
+                    
+                    # Check if container crashed
+                    if container.status != 'running':
+                        return False, f"Container stopped/crashed (status: {container.status})"
+                    
+                    # Check health status
+                    health_status = container.attrs.get('State', {}).get('Health', {}).get('Status')
+                    
+                    if health_status == 'healthy':
+                        logger.info(f"{container_name} is healthy after {elapsed}s")
+                        return True, ""
+                    elif health_status == 'unhealthy':
+                        return False, "Docker health check failed (status: unhealthy)"
+                    
+                    # Still starting or checking, wait more
+                    await asyncio.sleep(check_interval)
+                    elapsed += check_interval
+                
+                # Timeout - health check never became healthy
+                return False, f"Health check timeout after {max_wait_time}s (still in '{health_status}' state)"
+            
+            else:
+                # No HEALTHCHECK - monitor for crashes for 2 minutes
+                logger.info(f"Monitoring {container_name} for crashes (2 minutes)")
+                monitoring_duration = 120  # 2 minutes
+                check_interval = 10
+                elapsed = 0
+                initial_restart_count = container.attrs.get('RestartCount', 0)
+                
+                while elapsed < monitoring_duration:
+                    container.reload()
+                    
+                    # Check if container stopped
+                    if container.status != 'running':
+                        return False, f"Container stopped (status: {container.status}, exit code: {container.attrs['State'].get('ExitCode', 'unknown')})"
+                    
+                    # Check for repeated restarts
+                    current_restart_count = container.attrs.get('RestartCount', 0)
+                    if current_restart_count > initial_restart_count + 1:
+                        return False, f"Container restarted {current_restart_count - initial_restart_count} times"
+                    
+                    await asyncio.sleep(check_interval)
+                    elapsed += check_interval
+                
+                # Made it through monitoring period without issues
+                logger.info(f"{container_name} stable after {monitoring_duration}s")
+                return True, ""
+        
+        except docker.errors.NotFound:
+            return False, "Container not found"
+        except Exception as e:
+            logger.error(f"Error monitoring health for {container_name}: {e}")
+            return False, f"Health check error: {str(e)}"
+    
+    async def rollback_after_failed_update(self, container_name: str, old_image_id: str, 
+                                          container_config: Dict, failure_reason: str) -> bool:
+        """
+        Rollback to previous image after failed health check.
+        """
+        try:
+            logger.warning(f"Auto-rollback triggered for {container_name}: {failure_reason}")
+            
+            # Get current (failed) container
+            try:
+                failed_container = self.client.containers.get(container_name)
+                failed_container.stop(timeout=10)
+                failed_container.remove()
+            except docker.errors.NotFound:
+                pass
+            
+            # Get old image
+            old_image = self.client.images.get(old_image_id)
+            
+            # Recreate container with old image
+            logger.info(f"Recreating {container_name} with previous image {old_image_id[:12]}")
+            
+            binds = container_config.get('volumes', [])
+            
+            new_container = self.client.containers.run(
+                image=old_image.id,
+                name=container_config['name'],
+                environment=container_config.get('environment'),
+                volumes=binds,
+                ports=container_config.get('ports'),
+                network_mode=container_config.get('network_mode'),
+                restart_policy=container_config.get('restart_policy'),
+                labels=container_config.get('labels'),
+                command=container_config.get('command'),
+                entrypoint=container_config.get('entrypoint'),
+                working_dir=container_config.get('working_dir'),
+                user=container_config.get('user'),
+                hostname=container_config.get('hostname'),
+                extra_hosts=container_config.get('extra_hosts'),
+                privileged=container_config.get('privileged'),
+                cap_add=container_config.get('cap_add'),
+                cap_drop=container_config.get('cap_drop'),
+                devices=container_config.get('devices'),
+                detach=True
+            )
+            
+            logger.info(f"Successfully rolled back {container_name} to {old_image_id[:12]}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to rollback {container_name}: {e}")
+            return False
+    
     async def update_container(self, update_info: Dict, send_notification: bool = True) -> bool:
         """Update a container with the new image"""
         container = update_info['container']
@@ -347,6 +480,60 @@ echo "Helper: Whalekeeper updated successfully"
                 detach=True
             )
             
+            # Monitor container health after update
+            logger.info(f"Monitoring {container.name} health after update...")
+            is_healthy, failure_reason = await self.monitor_container_health(
+                container.name, 
+                old_image.id
+            )
+            
+            if not is_healthy:
+                # Health check failed - trigger auto-rollback
+                logger.error(f"Health check failed for {container.name}: {failure_reason}")
+                
+                # Record failed update with health check info
+                self.db.add_update_history(
+                    container_name=container.name,
+                    container_id=new_container.id,
+                    old_image=self._get_image_version(old_image),
+                    new_image=self._get_image_version(new_image),
+                    old_image_id=old_image.id,
+                    new_image_id=new_image.id,
+                    status="rolled_back",
+                    message=f"Auto-rollback triggered: {failure_reason}",
+                    health_check_passed=False,
+                    rollback_reason=failure_reason
+                )
+                
+                # Perform rollback
+                rollback_success = await self.rollback_after_failed_update(
+                    container.name,
+                    old_image.id,
+                    container_config,
+                    failure_reason
+                )
+                
+                # Send rollback notification
+                if send_notification:
+                    await self.notifier.send_notification(
+                        title=f"⚠️ Auto-Rollback: {container.name}",
+                        message=f"Update failed health check and was automatically rolled back",
+                        update_info={
+                            "Container": container.name,
+                            "Old Image": self._get_image_version(old_image),
+                            "New Image (Failed)": self._get_image_version(new_image),
+                            "Failure Reason": failure_reason,
+                            "Rollback": "Success" if rollback_success else "Failed",
+                            "Current State": "Running on previous version" if rollback_success else "Manual intervention required"
+                        },
+                        notification_type="error"
+                    )
+                
+                return False
+            
+            # Health check passed!
+            logger.info(f"Health check passed for {container.name}")
+            
             # Record success
             self.db.add_update_history(
                 container_name=container.name,
@@ -356,7 +543,8 @@ echo "Helper: Whalekeeper updated successfully"
                 old_image_id=old_image.id,
                 new_image_id=new_image.id,
                 status="success",
-                message="Container updated successfully"
+                message="Container updated successfully and passed health checks",
+                health_check_passed=True
             )
             
             # Send notification (only for individual updates, not batch)
@@ -368,7 +556,8 @@ echo "Helper: Whalekeeper updated successfully"
                         "Container": container.name,
                         "Old Image": self._get_image_version(old_image),
                         "New Image": self._get_image_version(new_image),
-                        "Status": "Success"
+                        "Status": "Success ✓",
+                        "Health Check": "Passed"
                     },
                     notification_type="success"
                 )
@@ -408,6 +597,10 @@ echo "Helper: Whalekeeper updated successfully"
                     },
                     notification_type="error"
                 )
+            
+            return False
+    
+    async def rollback_container(self, container_name: str, version_id: int):
         """Rollback a container to a previous version"""
         try:
             # Get the version info
@@ -552,19 +745,27 @@ echo "Helper: Whalekeeper updated successfully"
         except Exception as e:
             logger.error(f"Failed to rollback {container_name}: {e}")
             
-            # Log failed rollback attempt
+            # Try to get version info for better logging
+            try:
+                if 'version' not in locals():
+                    versions = self.db.get_image_versions(container_name)
+                    version = next((v for v in versions if v['id'] == version_id), None)
+            except:
+                version = None
+            
+            # Log failed rollback attempt with as much info as possible
             self.db.add_update_history(
                 container_name=container_name,
                 container_id="",
-                old_image="",
-                new_image=version.get('image_name', '') if 'version' in locals() else '',
+                old_image="N/A",
+                new_image=version['image_tag'] if version else "N/A",
                 old_image_id="",
-                new_image_id="",
+                new_image_id=version.get('image_id', '') if version else '',
                 status="failed",
                 message=f"Rollback failed: {str(e)}"
             )
             
-            return {"success": False}
+            return {"success": False, "error": str(e)}
     
     async def check_all_containers(self):
         """Check all monitored containers for updates"""

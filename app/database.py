@@ -28,9 +28,22 @@ class Database:
                 new_image_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 message TEXT,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                health_check_passed INTEGER DEFAULT NULL,
+                rollback_reason TEXT DEFAULT NULL
             )
         """)
+        
+        # Add columns to existing table if they don't exist
+        try:
+            cursor.execute("ALTER TABLE update_history ADD COLUMN health_check_passed INTEGER DEFAULT NULL")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
+        try:
+            cursor.execute("ALTER TABLE update_history ADD COLUMN rollback_reason TEXT DEFAULT NULL")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         
         # Image versions table for rollback
         cursor.execute("""
@@ -70,19 +83,24 @@ class Database:
     def add_update_history(self, container_name: str, container_id: str, 
                           old_image: str, new_image: str,
                           old_image_id: str, new_image_id: str,
-                          status: str, message: str = ""):
+                          status: str, message: str = "",
+                          health_check_passed: Optional[bool] = None,
+                          rollback_reason: Optional[str] = None):
         """Record an update attempt"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        health_check_int = None if health_check_passed is None else (1 if health_check_passed else 0)
+        
         cursor.execute("""
             INSERT INTO update_history 
             (container_name, container_id, old_image, new_image, 
-             old_image_id, new_image_id, status, message, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             old_image_id, new_image_id, status, message, timestamp,
+             health_check_passed, rollback_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (container_name, container_id, old_image, new_image,
               old_image_id, new_image_id, status, message, 
-              datetime.now().isoformat()))
+              datetime.now().isoformat(), health_check_int, rollback_reason))
         
         conn.commit()
         conn.close()
