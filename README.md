@@ -195,21 +195,3 @@ Bug reports and pull requests are welcome on GitHub.
 
 MIT License - see LICENSE file for details.
 
-## Development
-
-Run tests:
-```bash
-pip install -r requirements-dev.txt
-./test.sh
-```
-
-Or manually:
-```bash
-python3 -m pytest tests/ -v
-```
-
-Build:
-```bash
-./build.sh  # Runs tests first
-```
-
