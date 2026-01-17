@@ -65,5 +65,5 @@ coverage.xml
 DEVELOPMENT.md
 docker-updater-project.md
 
-# Personal scripts
-*.sh
+# Personal scripts (only in root folder)
+/*.sh
