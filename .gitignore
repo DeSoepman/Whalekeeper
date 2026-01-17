@@ -66,5 +66,4 @@ DEVELOPMENT.md
 docker-updater-project.md
 
 # Personal scripts
-push.sh
-release.sh
+*.sh
