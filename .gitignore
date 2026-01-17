@@ -48,6 +48,13 @@ Thumbs.db
 *.log
 
 # Environment variables
+
+# Test coverage
+.coverage
+.pytest_cache/
+htmlcov/
+coverage.xml
+*.cover
 .env
 
 # Temporary files

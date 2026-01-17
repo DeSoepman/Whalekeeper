@@ -24,18 +24,50 @@ class DockerMonitor:
     def _get_image_version(self, image) -> str:
         """Extract version from image labels or tags"""
         try:
-            # Try to get version from OCI label
-            if image.labels and 'org.opencontainers.image.version' in image.labels:
-                return image.labels['org.opencontainers.image.version']
+            # Try to get version from image labels (check multiple standard labels)
+            if image.labels:
+                version_label = (
+                    image.labels.get('io.hass.version') or  # Home Assistant
+                    image.labels.get('org.opencontainers.image.version') or  # OCI standard
+                    image.labels.get('version') or  # Generic
+                    image.labels.get('VERSION')  # Generic uppercase
+                )
+                
+                if version_label:
+                    return version_label
             
-            # Fall back to tag if it looks like a version
+            # Fall back to versioned tags (prefer versioned tags over 'latest', 'stable', 'dev')
             if image.tags:
+                versioned_tags = [tag.split(':')[-1] for tag in image.tags 
+                                 if not any(x in tag.lower() for x in [':latest', ':stable', ':dev'])]
+                if versioned_tags:
+                    return versioned_tags[0]
+                
+                # If only generic tags, use the first one
                 tag = image.tags[0].split(':')[-1]
-                if tag and tag != 'latest':
+                if tag:
                     return tag
             
             # Return image ID as fallback
             return image.id[:12]
+        except Exception:
+            return image.id[:12]
+    
+    def _get_image_display_name(self, image) -> str:
+        """Get display name for image (base name with version instead of generic tag)"""
+        try:
+            # Get the base image name (without tag)
+            if image.tags:
+                base_name = image.tags[0].rsplit(':', 1)[0]
+            else:
+                # No tags, return image ID
+                return image.id[:12]
+            
+            # Get the version
+            version = self._get_image_version(image)
+            
+            # Construct display name
+            return f"{base_name}:{version}"
         except Exception:
             return image.id[:12]
     
@@ -202,8 +234,8 @@ class DockerMonitor:
             self.db.add_update_history(
                 container_name=container.name,
                 container_id=container.id,
-                old_image=old_image.tags[0] if old_image.tags else old_image.id[:12],
-                new_image=new_image.tags[0] if new_image.tags else new_image.id[:12],
+                old_image=self._get_image_version(old_image),
+                new_image=self._get_image_version(new_image),
                 old_image_id=old_image.id,
                 new_image_id=new_image.id,
                 status="success",
@@ -270,8 +302,8 @@ echo "Helper: Whalekeeper updated successfully"
             # Save current configuration for rollback
             container_config = self.get_container_config(container)
             
-            # Extract tag from image name
-            image_tag = image_name.split(':')[-1] if ':' in image_name else 'latest'
+            # Extract version from image labels or tags (prefer version number over generic tags)
+            image_tag = self._get_image_version(old_image)
             
             self.db.save_image_version(
                 container_name=container.name,
@@ -319,8 +351,8 @@ echo "Helper: Whalekeeper updated successfully"
             self.db.add_update_history(
                 container_name=container.name,
                 container_id=new_container.id,
-                old_image=old_image.tags[0] if old_image.tags else old_image.id[:12],
-                new_image=new_image.tags[0] if new_image.tags else new_image.id[:12],
+                old_image=self._get_image_version(old_image),
+                new_image=self._get_image_version(new_image),
                 old_image_id=old_image.id,
                 new_image_id=new_image.id,
                 status="success",
@@ -334,8 +366,8 @@ echo "Helper: Whalekeeper updated successfully"
                     message=f"Successfully updated container {container.name}",
                     update_info={
                         "Container": container.name,
-                        "Old Image": old_image.tags[0] if old_image.tags else old_image.id[:12],
-                        "New Image": new_image.tags[0] if new_image.tags else new_image.id[:12],
+                        "Old Image": self._get_image_version(old_image),
+                        "New Image": self._get_image_version(new_image),
                         "Status": "Success"
                     },
                     notification_type="success"
@@ -357,8 +389,8 @@ echo "Helper: Whalekeeper updated successfully"
             self.db.add_update_history(
                 container_name=container.name,
                 container_id=container.id,
-                old_image=old_image.tags[0] if old_image.tags else old_image.id[:12],
-                new_image=new_image.tags[0] if new_image.tags else new_image.id[:12],
+                old_image=self._get_image_version(old_image),
+                new_image=self._get_image_version(new_image),
                 old_image_id=old_image.id,
                 new_image_id=new_image.id,
                 status="failed",

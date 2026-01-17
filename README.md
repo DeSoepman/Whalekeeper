@@ -59,7 +59,7 @@ services:
     container_name: whalekeeper
     restart: unless-stopped
     ports:
-      - "5454:5454"
+      - 5454:5454
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # Required for Docker access
       - ./config:/app/config                        # Configuration
@@ -281,6 +281,36 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - **Issues**: [GitHub Issues](https://github.com/desoepman/whalekeeper/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/desoepman/whalekeeper/discussions)
+
+## 🧪 Development & Testing
+
+### Running Tests
+
+Whalekeeper includes a comprehensive test suite to ensure reliability.
+
+**Install test dependencies:**
+```bash
+pip install -r requirements-dev.txt
+```
+
+**Run all tests:**
+```bash
+./test.sh
+# or
+python3 -m pytest tests/ -v
+```
+
+**Run tests with coverage:**
+```bash
+python3 -m pytest tests/ --cov=app --cov-report=html
+```
+
+**Build with tests:**
+```bash
+./build.sh  # Runs tests first, then builds Docker image
+```
+
+See [tests/README.md](tests/README.md) for more testing details.
 
 ## 🌟 Show Your Support
 

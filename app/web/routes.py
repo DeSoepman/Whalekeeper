@@ -231,30 +231,10 @@ async def get_versions(container_name: str, session_data: str = Depends(require_
     try:
         versions = db.get_image_versions(container_name)
         
-        # Enhance each version with display name from image labels
+        # Since image_tag is now saved with the actual version number,
+        # we just use it directly as the display tag
         for version in versions:
-            try:
-                image = monitor.client.images.get(version['image_id'])
-                
-                # Try to get version from labels
-                if image.labels:
-                    version_label = (
-                        image.labels.get('io.hass.version') or
-                        image.labels.get('org.opencontainers.image.version') or
-                        image.labels.get('version') or
-                        image.labels.get('VERSION')
-                    )
-                    
-                    if version_label:
-                        version['display_tag'] = version_label
-                    else:
-                        version['display_tag'] = version['image_tag']
-                else:
-                    version['display_tag'] = version['image_tag']
-            except Exception as e:
-                # If image is not found or can't be inspected, use original tag
-                logger.debug(f"Could not get labels for image {version['image_id'][:12]}: {e}")
-                version['display_tag'] = version['image_tag']
+            version['display_tag'] = version['image_tag']
         
         return versions
     except Exception as e:

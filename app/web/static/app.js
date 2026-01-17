@@ -175,6 +175,7 @@ async function loadHistory() {
     }).join('');
 }
 
+
 async function checkNow() {
     try {
         // Get all monitored containers
