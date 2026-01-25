@@ -1,4 +1,57 @@
 let isRestarting = false;
+let notificationModalResolve = null;
+
+// Notification Modal Functions
+function showNotification(title, message, type = 'info') {
+    const modal = document.getElementById('notification-modal');
+    const titleEl = document.getElementById('notification-modal-title');
+    const messageEl = document.getElementById('notification-modal-message');
+    const footer = document.getElementById('notification-modal-footer');
+    
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    
+    // Set button based on type
+    footer.innerHTML = '<button onclick="closeNotificationModal()">' + 
+        (type === 'error' ? 'OK' : 'OK') + '</button>';
+    
+    modal.classList.add('active');
+    
+    return new Promise((resolve) => {
+        notificationModalResolve = resolve;
+    });
+}
+
+function showConfirm(title, message) {
+    const modal = document.getElementById('notification-modal');
+    const titleEl = document.getElementById('notification-modal-title');
+    const messageEl = document.getElementById('notification-modal-message');
+    const footer = document.getElementById('notification-modal-footer');
+    
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    
+    footer.innerHTML = `
+        <button onclick="closeNotificationModal(false)">Cancel</button>
+        <button onclick="closeNotificationModal(true)">Confirm</button>
+    `;
+    
+    modal.classList.add('active');
+    
+    return new Promise((resolve) => {
+        notificationModalResolve = resolve;
+    });
+}
+
+function closeNotificationModal(result = true) {
+    const modal = document.getElementById('notification-modal');
+    modal.classList.remove('active');
+    
+    if (notificationModalResolve) {
+        notificationModalResolve(result);
+        notificationModalResolve = null;
+    }
+}
 
 async function fetchData(endpoint) {
     const response = await fetch(endpoint);
@@ -236,7 +289,7 @@ async function checkNow() {
         }, 2000);
         
     } catch (error) {
-        alert('Error triggering update check: ' + error);
+        showNotification('Error', 'Error triggering update check: ' + error, 'error');
     }
 }
 
@@ -684,6 +737,37 @@ setTimeout(() => {
 // Initial load
 refreshData();
 
+// Reset setup wizard
+async function resetWizard() {
+    const confirmed = await showConfirm(
+        'Reset Setup Wizard',
+        'Are you sure you want to reset the setup wizard? It will appear again on the next page load.'
+    );
+    
+    if (!confirmed) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/reset-wizard', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            await showNotification('Success', 'Setup wizard has been reset. The page will reload.', 'success');
+            location.reload();
+        } else {
+            const data = await response.json();
+            showNotification('Error', 'Failed to reset wizard: ' + (data.detail || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        showNotification('Error', 'Error resetting wizard: ' + error.message, 'error');
+    }
+}
+
 // Auto-refresh every 30 seconds only on dashboard
 setInterval(function() {
     const dashboardTab = document.getElementById('dashboard');
@@ -846,7 +930,7 @@ document.getElementById('config-form').addEventListener('submit', async function
     });
     
     const result = await response.json();
-    alert(result.message);
+    showNotification('Configuration Saved', result.message, 'success');
 });
 
 // Save notification configuration
@@ -919,15 +1003,15 @@ async function sendTestEmail() {
     
     // Validate required fields
     if (!emailData.smtp_host) {
-        alert('Please enter SMTP Host');
+        showNotification('Validation Error', 'Please enter SMTP Host', 'error');
         return;
     }
     if (!emailData.from_address) {
-        alert('Please enter From Address');
+        showNotification('Validation Error', 'Please enter From Address', 'error');
         return;
     }
     if (emailData.to_addresses.length === 0) {
-        alert('Please enter at least one To Address');
+        showNotification('Validation Error', 'Please enter at least one To Address', 'error');
         return;
     }
     
@@ -987,12 +1071,12 @@ async function toggleMonitoring(containerName, enabled) {
             // Refresh container list to update UI
             await loadContainers();
         } else {
-            alert('Failed to toggle monitoring: ' + result.message);
+            showNotification('Error', 'Failed to toggle monitoring: ' + result.message, 'error');
             // Refresh to revert checkbox state
             await loadContainers();
         }
     } catch (error) {
-        alert('Error toggling monitoring: ' + error);
+        showNotification('Error', 'Error toggling monitoring: ' + error, 'error');
         await loadContainers();
     }
 }
@@ -1057,3 +1141,215 @@ async function logout() {
         window.location.href = '/login';
     }
 }
+
+// Setup Wizard
+let wizardCurrentStep = 0;
+const wizardTotalSteps = 4;
+let allContainers = [];
+
+async function checkSetupStatus() {
+    try {
+        const response = await fetch('/api/setup-status');
+        const data = await response.json();
+        
+        if (!data.setup_completed) {
+            // Load containers for exclusion step
+            const containersData = await fetchData('/api/containers');
+            allContainers = containersData;
+            
+            // Show wizard
+            showWizard();
+        }
+    } catch (error) {
+        console.error('Error checking setup status:', error);
+    }
+}
+
+function showWizard() {
+    document.getElementById('setupWizard').classList.add('active');
+    updateWizardButtons();
+}
+
+function hideWizard() {
+    document.getElementById('setupWizard').classList.remove('active');
+}
+
+async function skipWizard() {
+    const confirmed = await showConfirm(
+        'Skip Setup Wizard',
+        'Are you sure you want to skip the setup? You can configure these settings later.'
+    );
+    
+    if (confirmed) {
+        completeWizard();
+    }
+}
+
+function wizardNext() {
+    if (wizardCurrentStep < wizardTotalSteps - 1) {
+        wizardCurrentStep++;
+        updateWizardStep();
+    } else {
+        // Last step - finish setup
+        saveWizardSettings();
+    }
+}
+
+function wizardBack() {
+    if (wizardCurrentStep > 0) {
+        wizardCurrentStep--;
+        updateWizardStep();
+    }
+}
+
+function updateWizardStep() {
+    // Hide all steps
+    document.querySelectorAll('.wizard-step').forEach(step => {
+        step.classList.remove('active');
+    });
+    
+    // Show current step
+    document.getElementById(`step-${wizardCurrentStep}`).classList.add('active');
+    
+    // Update progress dots
+    for (let i = 0; i < wizardTotalSteps; i++) {
+        const dot = document.getElementById(`progress-${i}`);
+        if (i < wizardCurrentStep) {
+            dot.classList.add('completed');
+            dot.classList.remove('active');
+        } else if (i === wizardCurrentStep) {
+            dot.classList.add('active');
+            dot.classList.remove('completed');
+        } else {
+            dot.classList.remove('active', 'completed');
+        }
+    }
+    
+    // Populate exclusion list on step 2
+    if (wizardCurrentStep === 2) {
+        populateExclusionList();
+    }
+    
+    updateWizardButtons();
+}
+
+function updateWizardButtons() {
+    const backBtn = document.getElementById('wizardBackBtn');
+    const nextBtn = document.getElementById('wizardNextBtn');
+    
+    backBtn.disabled = wizardCurrentStep === 0;
+    nextBtn.textContent = wizardCurrentStep === wizardTotalSteps - 1 ? 'Finish Setup' : 'Next';
+}
+
+function populateExclusionList() {
+    const exclusionList = document.getElementById('exclusionList');
+    
+    if (allContainers.length === 0) {
+        exclusionList.innerHTML = '<p style="color: #888;">No containers found</p>';
+        return;
+    }
+    
+    // Get self-update preference from step 2
+    const selfUpdateChoice = document.querySelector('input[name="selfupdate"]:checked');
+    const selfUpdate = selfUpdateChoice ? selfUpdateChoice.value : 'notify';
+    const whaleKeeperExcluded = selfUpdate === 'notify';
+    
+    exclusionList.innerHTML = allContainers.map(container => `
+        <div class="wizard-checkbox">
+            <input type="checkbox" id="exclude-${container.name}" value="${container.name}" 
+                   ${container.name === 'whalekeeper' && whaleKeeperExcluded ? 'checked disabled' : ''}>
+            <label for="exclude-${container.name}">
+                ${container.name}
+                ${container.name === 'whalekeeper' && whaleKeeperExcluded ? '<span style="color: #888; font-size: 12px; margin-left: 8px;">(excluded based on your choice)</span>' : ''}
+            </label>
+        </div>
+    `).join('');
+}
+
+async function saveWizardSettings() {
+    try {
+        // Collect settings
+        const schedule = document.querySelector('input[name="schedule"]:checked').value;
+        const selfUpdate = document.querySelector('input[name="selfupdate"]:checked').value;
+        const excludeContainers = [];
+        
+        // Always exclude whalekeeper based on self-update choice
+        if (selfUpdate === 'notify') {
+            excludeContainers.push('whalekeeper');
+        }
+        
+        // Add manually selected exclusions
+        document.querySelectorAll('#exclusionList input[type="checkbox"]:checked').forEach(checkbox => {
+            if (checkbox.value !== 'whalekeeper' && !excludeContainers.includes(checkbox.value)) {
+                excludeContainers.push(checkbox.value);
+            }
+        });
+        
+        // Save to backend
+        const response = await fetch('/api/complete-setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                cron_schedule: schedule,
+                self_update: selfUpdate,
+                exclude_containers: excludeContainers
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            hideWizard();
+            await showNotification('Setup Complete', 'Whalekeeper is now monitoring your containers.', 'success');
+            // Reload page to apply new settings
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showNotification('Error', 'Failed to save settings: ' + data.message, 'error');
+        }
+    } catch (error) {
+        console.error('Error saving wizard settings:', error);
+        showNotification('Error', 'Failed to save settings. Please try again.', 'error');
+    }
+}
+
+async function completeWizard() {
+    try {
+        // Just mark as completed without changing any config settings
+        const response = await fetch('/api/skip-setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            hideWizard();
+            location.reload();
+        }
+    } catch (error) {
+        console.error('Error skipping wizard:', error);
+        hideWizard();
+        location.reload();
+    }
+}
+
+// Check setup status on page load
+document.addEventListener('DOMContentLoaded', () => {
+    checkSetupStatus();
+    
+    // Add click handlers for wizard options
+    document.addEventListener('click', (e) => {
+        const option = e.target.closest('.wizard-option');
+        if (option) {
+            const radio = option.querySelector('input[type="radio"]');
+            if (radio) {
+                radio.checked = true;
+                // Update selected state
+                option.parentElement.querySelectorAll('.wizard-option').forEach(opt => {
+                    opt.classList.remove('selected');
+                });
+                option.classList.add('selected');
+            }
+        }
+    });
+});

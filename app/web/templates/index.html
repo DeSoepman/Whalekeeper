@@ -515,7 +515,7 @@
         .modal {
             display: none;
             position: fixed;
-            z-index: 1000;
+            z-index: 10000;
             left: 0;
             top: 0;
             width: 100%;
@@ -875,6 +875,209 @@
                 font-size: 10px;
             }
         }
+        
+        /* Setup Wizard Modal */
+        .wizard-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .wizard-overlay.active {
+            display: flex;
+        }
+        
+        .wizard-modal {
+            background: #191A1C;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+        
+        .wizard-header {
+            padding: 30px;
+            border-bottom: 1px solid #2a2a2a;
+            position: relative;
+        }
+        
+        .wizard-header h2 {
+            font-size: 24px;
+            margin-bottom: 8px;
+            color: #fff;
+        }
+        
+        .wizard-header p {
+            color: #888;
+            font-size: 14px;
+        }
+        
+        .wizard-skip {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: transparent;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 5px 10px;
+        }
+        
+        .wizard-skip:hover {
+            color: #fff;
+        }
+        
+        .wizard-progress {
+            display: flex;
+            gap: 8px;
+            margin-top: 20px;
+        }
+        
+        .wizard-progress-dot {
+            flex: 1;
+            height: 4px;
+            background: #2a2a2a;
+            border-radius: 2px;
+            transition: background 0.3s;
+        }
+        
+        .wizard-progress-dot.active {
+            background: #00ff88;
+        }
+        
+        .wizard-progress-dot.completed {
+            background: #00aa66;
+        }
+        
+        .wizard-body {
+            padding: 30px;
+        }
+        
+        .wizard-step {
+            display: none;
+        }
+        
+        .wizard-step.active {
+            display: block;
+        }
+        
+        .wizard-step h3 {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+        
+        .wizard-option {
+            display: block;
+            padding: 15px;
+            margin-bottom: 10px;
+            background: #161718;
+            border: 2px solid #2a2a2a;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .wizard-option:hover {
+            border-color: #00ff88;
+            background: #1a1b1d;
+        }
+        
+        .wizard-option input[type="radio"] {
+            margin-right: 12px;
+            accent-color: #00ff88;
+            display: none;
+        }
+        
+        .wizard-option.selected {
+            border-color: #00ff88;
+            background: rgba(0, 255, 136, 0.05);
+        }
+        
+        .wizard-checkbox {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #161718;
+            border: 1px solid #2a2a2a;
+            border-radius: 6px;
+        }
+        
+        .wizard-checkbox input[type="checkbox"] {
+            margin-right: 12px;
+            accent-color: #00ff88;
+        }
+        
+        .wizard-checkbox label {
+            cursor: pointer;
+            color: #e0e0e0;
+            flex: 1;
+        }
+        
+        .wizard-note {
+            margin-top: 15px;
+            padding: 12px;
+            background: rgba(0, 170, 255, 0.1);
+            border: 1px solid rgba(0, 170, 255, 0.3);
+            border-radius: 6px;
+            color: #00aaff;
+            font-size: 13px;
+        }
+        
+        .wizard-footer {
+            padding: 20px 30px;
+            border-top: 1px solid #2a2a2a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .wizard-footer button {
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+        
+        .wizard-btn-back {
+            background: transparent;
+            color: #888;
+            border: 1px solid #2a2a2a;
+        }
+        
+        .wizard-btn-back:hover:not(:disabled) {
+            color: #fff;
+            border-color: #444;
+        }
+        
+        .wizard-btn-back:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        
+        .wizard-btn-next {
+            background: #00ff88;
+            color: #000;
+        }
+        
+        .wizard-btn-next:hover {
+            background: #00dd77;
+        }
     </style>
 </head>
 <body>
@@ -968,6 +1171,11 @@
                     <div class="form-group">
                         <label>Web Port</label>
                         <input type="number" id="web_port" name="web.port" min="1024" max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label>Setup Wizard</label>
+                        <button type="button" class="secondary" onclick="resetWizard()" style="width: auto; padding: 10px 20px;">Reset Setup Wizard</button>
+                        <small>Reset the setup wizard to run again on next page load</small>
                     </div>
                     
                     <div class="form-actions">
@@ -1078,6 +1286,147 @@
             <div class="modal-footer" id="modalFooter">
                 <button id="modalCancelBtn" onclick="closeModal()">Cancel</button>
                 <button id="modalConfirmBtn" onclick="confirmModalAction()">Confirm</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Setup Wizard Modal -->
+    <div class="wizard-overlay" id="setupWizard">
+        <div class="wizard-modal">
+            <div class="wizard-header">
+                <h2>Welcome to Whalekeeper!</h2>
+                <p>Let's get you set up in just a few steps</p>
+                <button class="wizard-skip" onclick="skipWizard()">Skip setup</button>
+                <div class="wizard-progress">
+                    <div class="wizard-progress-dot active" id="progress-0"></div>
+                    <div class="wizard-progress-dot" id="progress-1"></div>
+                    <div class="wizard-progress-dot" id="progress-2"></div>
+                    <div class="wizard-progress-dot" id="progress-3"></div>
+                </div>
+            </div>
+            
+            <div class="wizard-body">
+                <!-- Step 1: Update Schedule -->
+                <div class="wizard-step active" id="step-0">
+                    <h3>When should Whalekeeper check for updates?</h3>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="schedule" value="0 2 * * *" checked>
+                        <div>
+                            <strong>Daily at 2 AM</strong> (recommended)
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">Best for most users</div>
+                        </div>
+                    </label>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="schedule" value="0 22 * * 1">
+                        <div>
+                            <strong>Every Monday at 10 PM</strong>
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">Weekly updates</div>
+                        </div>
+                    </label>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="schedule" value="0 */6 * * *">
+                        <div>
+                            <strong>Every 6 hours</strong>
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">For critical systems</div>
+                        </div>
+                    </label>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="schedule" value="">
+                        <div>
+                            <strong>Manual only</strong>
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">Disable automatic checks</div>
+                        </div>
+                    </label>
+                </div>
+                
+                <!-- Step 2: Self-Update -->
+                <div class="wizard-step" id="step-1">
+                    <h3>How should Whalekeeper handle its own updates?</h3>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="selfupdate" value="auto" checked>
+                        <div>
+                            <strong>Update automatically</strong> (recommended)
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">Whalekeeper will update itself automatically with rollback protection</div>
+                        </div>
+                    </label>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="selfupdate" value="notify">
+                        <div>
+                            <strong>Notify me when updates are available</strong>
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">You'll see a notification and can update manually</div>
+                        </div>
+                    </label>
+                    
+                    <div class="wizard-note">
+                        Note: Whalekeeper has health checks and auto-rollback. If an update fails, it will automatically revert to the previous version.
+                    </div>
+                </div>
+                
+                <!-- Step 3: Container Exclusions -->
+                <div class="wizard-step" id="step-2">
+                    <h3>Exclude any containers from automatic updates?</h3>
+                    <p style="color: #888; margin-bottom: 20px; font-size: 14px;">Select containers that should never be updated automatically</p>
+                    
+                    <div id="exclusionList">
+                        <!-- Will be populated by JavaScript -->
+                    </div>
+                </div>
+                
+                <!-- Step 4: Notifications -->
+                <div class="wizard-step" id="step-3">
+                    <h3>How do you want to be notified?</h3>
+                    <p style="color: #888; margin-bottom: 20px; font-size: 14px;">You can configure these settings later in the Configuration tab</p>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="notifications" value="skip" checked>
+                        <div>
+                            <strong>Skip for now</strong>
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">Configure notifications later</div>
+                        </div>
+                    </label>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="notifications" value="email">
+                        <div>
+                            <strong>Email (SMTP)</strong>
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">Get email notifications about updates</div>
+                        </div>
+                    </label>
+                    
+                    <label class="wizard-option">
+                        <input type="radio" name="notifications" value="discord">
+                        <div>
+                            <strong>Discord webhook</strong>
+                            <div style="font-size: 12px; color: #888; margin-top: 4px;">Send notifications to Discord</div>
+                        </div>
+                    </label>
+                    
+                    <div class="wizard-note">
+                        You can set up and test notifications in the Configuration tab after completing setup.
+                    </div>
+                </div>
+            </div>
+            
+            <div class="wizard-footer">
+                <button class="wizard-btn-back" onclick="wizardBack()" id="wizardBackBtn" disabled>Back</button>
+                <button class="wizard-btn-next" onclick="wizardNext()" id="wizardNextBtn">Next</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Notification Modal -->
+    <div id="notification-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header" id="notification-modal-title">Notification</div>
+            <div class="modal-body" id="notification-modal-message">Message goes here</div>
+            <div class="modal-footer" id="notification-modal-footer">
+                <button onclick="closeNotificationModal()">OK</button>
             </div>
         </div>
     </div>

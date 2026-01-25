@@ -12,10 +12,8 @@ services:
       - ./config:/app/config
       # Persist database
       - ./data:/app/data
-      # Live reload for templates and static files
-      - ./app/web/templates:/app/app/web/templates
-      - ./app/web/static:/app/app/web/static
-      # Live reload for version file
+      # Live reload for app code (development)
+      - ./app:/app/app
       # Live reload for version file
       - ./VERSION:/app/VERSION
     environment:

@@ -5,6 +5,9 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from croniter import croniter
 import time
+import shlex
+import os
+from pathlib import Path
 
 from app.config import Config
 from app.database import Database
@@ -252,6 +255,9 @@ class DockerMonitor:
             # Build docker run command for recreating whalekeeper
             run_cmd = self._build_docker_run_command(config, new_image_ref)
             
+            # Escape command for safe shell execution
+            escaped_run_cmd = shlex.quote(run_cmd)
+            
             # Create helper script that will update whalekeeper
             helper_script = f'''#!/bin/sh
 echo "Helper: Installing docker CLI..."
@@ -263,7 +269,7 @@ docker stop whalekeeper || true
 echo "Helper: Removing whalekeeper container..."
 docker rm whalekeeper || true
 echo "Helper: Starting new whalekeeper container..."
-{run_cmd}
+eval {escaped_run_cmd}
 echo "Helper: Whalekeeper updated successfully"
 '''
             
@@ -600,6 +606,232 @@ echo "Helper: Whalekeeper updated successfully"
             
             return False
     
+    async def update_compose_container(self, update_info: Dict, compose_project: str, 
+                                      compose_service: str, send_notification: bool = True) -> bool:
+        """Update a docker-compose managed container"""
+        container = update_info['container']
+        old_image = update_info['old_image']
+        new_image = update_info['new_image']
+        image_name = update_info['image_name']
+        
+        try:
+            logger.info(f"Updating compose-managed container {container.name} using docker-compose")
+            
+            # Save current configuration for potential rollback
+            container_config = self.get_container_config(container)
+            image_tag = self._get_image_version(old_image)
+            
+            self.db.save_image_version(
+                container_name=container.name,
+                image_name=image_name,
+                image_id=old_image.id,
+                image_tag=image_tag,
+                container_config=container_config
+            )
+            
+            # Get compose file path from container labels
+            compose_file = container.labels.get('com.docker.compose.project.config_files')
+            compose_working_dir = container.labels.get('com.docker.compose.project.working_dir')
+            
+            # Validate and sanitize paths to prevent command injection
+            compose_file_path = None
+            if compose_working_dir:
+                # Validate working directory path
+                try:
+                    working_dir = Path(compose_working_dir).resolve()
+                    # Ensure it's an absolute path and doesn't contain traversal attempts
+                    if working_dir.is_absolute() and '..' not in compose_working_dir:
+                        compose_file_path = str(working_dir / 'docker-compose.yml')
+                    else:
+                        logger.warning(f"Invalid compose working directory: {compose_working_dir}")
+                except (ValueError, OSError) as e:
+                    logger.warning(f"Invalid compose working directory path: {compose_working_dir}, error: {e}")
+            elif compose_file:
+                # Validate compose file path
+                try:
+                    file_path = Path(compose_file).resolve()
+                    if file_path.is_absolute() and '..' not in compose_file and file_path.exists():
+                        compose_file_path = str(file_path)
+                    else:
+                        logger.warning(f"Invalid compose file path: {compose_file}")
+                except (ValueError, OSError) as e:
+                    logger.warning(f"Invalid compose file path: {compose_file}, error: {e}")
+            
+            if not compose_file_path:
+                raise Exception("No valid compose file path found in container labels")
+            
+            # Build docker-compose command with validated paths
+            compose_cmd_parts = ['docker', 'compose', '-f', compose_file_path, '-p', compose_project, 'up', '-d', compose_service]
+            
+            # Execute docker-compose up command
+            import subprocess
+            result = subprocess.run(
+                compose_cmd_parts,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"docker-compose command failed: {result.stderr}")
+            
+            logger.info(f"Container {container.name} updated successfully via docker-compose")
+            
+            # Get the updated container
+            await asyncio.sleep(2)  # Give docker-compose time to fully start the container
+            try:
+                new_container = self.client.containers.get(container.name)
+            except docker.errors.NotFound:
+                raise Exception("Container not found after docker-compose up")
+            
+            # Monitor container health after update
+            logger.info(f"Monitoring {container.name} health after compose update...")
+            is_healthy, failure_reason = await self.monitor_container_health(
+                container.name, 
+                old_image.id
+            )
+            
+            if not is_healthy:
+                # Health check failed - rollback to standalone container to keep service running
+                logger.error(f"Health check failed for compose container {container.name}: {failure_reason}")
+                logger.info(f"Auto-rolling back {container.name} to standalone container")
+                
+                # Record failed update with rollback info
+                self.db.add_update_history(
+                    container_name=container.name,
+                    container_id=new_container.id,
+                    old_image=self._get_image_version(old_image),
+                    new_image=self._get_image_version(new_image),
+                    old_image_id=old_image.id,
+                    new_image_id=new_image.id,
+                    status="rolled_back",
+                    message=f"Compose container health check failed, rolled back to standalone: {failure_reason}",
+                    health_check_passed=False,
+                    rollback_reason=failure_reason
+                )
+                
+                # Perform rollback to standalone container
+                rollback_success = await self.rollback_after_failed_update(
+                    container.name,
+                    old_image.id,
+                    container_config,
+                    failure_reason
+                )
+                
+                # Send notification with clear instructions
+                if send_notification:
+                    if rollback_success:
+                        # Get compose working directory if available
+                        compose_dir = container.labels.get('com.docker.compose.project.working_dir', '/path/to/compose/dir')
+                        
+                        message_detail = (
+                            f"The update failed health checks and was automatically rolled back.\n\n"
+                            f"Your service is running with the old version as a STANDALONE container "
+                            f"(no longer managed by docker-compose).\n\n"
+                            f"To restore compose management:\n"
+                            f"1. Stop and remove the standalone container:\n"
+                            f"   docker stop {container.name}\n"
+                            f"   docker rm {container.name}\n\n"
+                            f"2. Go to your compose directory and start the service:\n"
+                            f"   cd {compose_dir}\n"
+                            f"   docker compose up -d {compose_service}\n\n"
+                            f"This will restore full compose management with networks and dependencies."
+                        )
+                    else:
+                        message_detail = (
+                            f"The update failed health checks AND automatic rollback failed.\n"
+                            f"Manual intervention required immediately!"
+                        )
+                    
+                    await self.notifier.send_notification(
+                        title=f"⚠️ Auto-Rollback (Compose): {container.name}",
+                        message=message_detail,
+                        update_info={
+                            "Container": container.name,
+                            "Old Image": self._get_image_version(old_image),
+                            "New Image (Failed)": self._get_image_version(new_image),
+                            "Failure Reason": failure_reason,
+                            "Rollback Status": "Success - Running as standalone" if rollback_success else "FAILED - Needs manual fix",
+                            "Original Project": compose_project,
+                            "Original Service": compose_service
+                        },
+                        notification_type="warning"
+                    )
+                
+                return False
+            
+            # Health check passed
+            logger.info(f"Health check passed for compose container {container.name}")
+            
+            # Record success
+            self.db.add_update_history(
+                container_name=container.name,
+                container_id=new_container.id,
+                old_image=self._get_image_version(old_image),
+                new_image=self._get_image_version(new_image),
+                old_image_id=old_image.id,
+                new_image_id=new_image.id,
+                status="success",
+                message="Compose-managed container updated successfully and passed health checks",
+                health_check_passed=True
+            )
+            
+            # Send notification
+            if send_notification:
+                await self.notifier.send_notification(
+                    title=f"Container Updated: {container.name}",
+                    message=f"Successfully updated compose-managed container {container.name}",
+                    update_info={
+                        "Container": container.name,
+                        "Old Image": self._get_image_version(old_image),
+                        "New Image": self._get_image_version(new_image),
+                        "Status": "Success ✓",
+                        "Health Check": "Passed",
+                        "Managed By": f"docker-compose (project: {compose_project})"
+                    },
+                    notification_type="success"
+                )
+            
+            # Cleanup old versions
+            self.db.cleanup_old_versions(
+                container.name, 
+                self.config.rollback.keep_versions
+            )
+            
+            logger.info(f"Successfully updated compose container {container.name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to update compose container {container.name}: {e}")
+            
+            # Record failure
+            self.db.add_update_history(
+                container_name=container.name,
+                container_id=container.id,
+                old_image=self._get_image_version(old_image),
+                new_image=self._get_image_version(new_image),
+                old_image_id=old_image.id,
+                new_image_id=new_image.id,
+                status="failed",
+                message=f"Compose update failed: {str(e)}"
+            )
+            
+            # Send failure notification
+            if send_notification:
+                await self.notifier.send_notification(
+                    title=f"Update Failed: {container.name}",
+                    message=f"Failed to update compose-managed container {container.name}: {str(e)}",
+                    update_info={
+                        "Container": container.name,
+                        "Error": str(e),
+                        "Project": compose_project,
+                        "Service": compose_service
+                    },
+                    notification_type="error"
+                )
+            
+            return False
+    
     async def rollback_container(self, container_name: str, version_id: int):
         """Rollback a container to a previous version"""
         try:
@@ -614,9 +846,22 @@ echo "Helper: Whalekeeper updated successfully"
             # Get current container and capture current version info BEFORE stopping
             current_image = None
             current_version_display = None
+            is_compose_managed = False
+            compose_project = None
+            compose_service = None
+            compose_dir = None
+            
             try:
                 current_container = self.client.containers.get(container_name)
                 current_image = current_container.image
+                
+                # Check if this is a compose-managed container
+                is_compose_managed = 'com.docker.compose.project' in current_container.labels
+                if is_compose_managed:
+                    compose_project = current_container.labels.get('com.docker.compose.project')
+                    compose_service = current_container.labels.get('com.docker.compose.service')
+                    compose_dir = current_container.labels.get('com.docker.compose.project.working_dir', '/path/to/compose/dir')
+                    logger.info(f"Rolling back compose-managed container {container_name} (project: {compose_project}, service: {compose_service})")
                 
                 # Get current version from labels
                 if current_image.labels:
@@ -714,6 +959,10 @@ echo "Helper: Whalekeeper updated successfully"
             
             rollback_message = f"Rolled back from {current_version_display or 'current version'} to {rollback_to_version}"
             
+            # Add compose warning if applicable
+            if is_compose_managed:
+                rollback_message += " (now running as standalone container)"
+            
             # Log the rollback to history with version info
             self.db.add_update_history(
                 container_name=container_name,
@@ -728,19 +977,50 @@ echo "Helper: Whalekeeper updated successfully"
             
             # Send notification if enabled
             if self.config.notifications.email.notify_on_rollback:
+                notification_info = {
+                    "Container": container_name,
+                    "Image": best_tag,
+                    "Image Tag": version['image_tag'],
+                    "Saved On": version['created_at']
+                }
+                
+                notification_message = f"Successfully rolled back {container_name} to previous version"
+                
+                # Add compose-specific info and instructions
+                if is_compose_managed:
+                    notification_message += (
+                        f"\n\n⚠️ This was a compose-managed container. "
+                        f"It's now running as a STANDALONE container.\n\n"
+                        f"To restore compose management:\n"
+                        f"1. Stop and remove the standalone container:\n"
+                        f"   docker stop {container_name}\n"
+                        f"   docker rm {container_name}\n\n"
+                        f"2. Go to your compose directory and start the service:\n"
+                        f"   cd {compose_dir}\n"
+                        f"   docker compose up -d {compose_service}"
+                    )
+                    notification_info["Original Project"] = compose_project
+                    notification_info["Original Service"] = compose_service
+                    notification_info["Compose Directory"] = compose_dir
+                
                 await self.notifier.send_notification(
                     title=f"Container Rolled Back: {container_name}",
-                    message=f"Successfully rolled back {container_name} to previous version",
-                    update_info={
-                        "Container": container_name,
-                        "Image": best_tag,
-                        "Image Tag": version['image_tag'],
-                        "Saved On": version['created_at']
-                    },
+                    message=notification_message,
+                    update_info=notification_info,
                     notification_type="success"
                 )
             
-            return {"success": True, "best_tag": best_tag}
+            # Return success with compose info if applicable
+            result = {"success": True, "best_tag": best_tag}
+            if is_compose_managed:
+                result["is_compose"] = True
+                result["compose_instructions"] = {
+                    "project": compose_project,
+                    "service": compose_service,
+                    "directory": compose_dir
+                }
+            
+            return result
             
         except Exception as e:
             logger.error(f"Failed to rollback {container_name}: {e}")
@@ -750,7 +1030,7 @@ echo "Helper: Whalekeeper updated successfully"
                 if 'version' not in locals():
                     versions = self.db.get_image_versions(container_name)
                     version = next((v for v in versions if v['id'] == version_id), None)
-            except:
+            except Exception:
                 version = None
             
             # Log failed rollback attempt with as much info as possible

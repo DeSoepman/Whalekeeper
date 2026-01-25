@@ -43,7 +43,7 @@ def get_session_cookie(session: Optional[str] = Cookie(None)) -> Optional[str]:
     try:
         # Validate session (max age 30 days for remember me, 24 hours otherwise)
         data = session_serializer.loads(session, max_age=30*24*60*60)
-        return data
+        return data.get("username") if isinstance(data, dict) else data
     except BadSignature:
         return None
 
@@ -146,6 +146,115 @@ async def logout(response: Response):
     """Handle logout"""
     response.delete_cookie("session")
     return {"success": True}
+
+
+@router.get("/api/setup-status")
+async def get_setup_status(session_data: str = Depends(require_auth)):
+    """Check if user has completed setup wizard"""
+    try:
+        username = session_data
+        user = db.get_user(username)
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return {
+            "setup_completed": bool(user.get('setup_completed', 0)),
+            "username": username
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking setup status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/reset-wizard")
+async def reset_wizard(session_data: str = Depends(require_auth)):
+    """Reset the setup wizard for the current user"""
+    username = session_data
+    
+    # Reset the setup_completed flag
+    success = db.reset_setup_wizard(username)
+    
+    if success:
+        return {"status": "success", "message": "Setup wizard has been reset"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to reset wizard")
+
+
+@router.post("/api/skip-setup")
+async def skip_setup(session_data: str = Depends(require_auth)):
+    """Skip the setup wizard without changing any configuration"""
+    username = session_data
+    
+    # Just mark setup as completed, don't modify config
+    success = db.mark_setup_completed(username)
+    
+    if success:
+        return {"status": "success", "message": "Setup wizard skipped"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to skip setup")
+
+
+@router.post("/api/complete-setup")
+async def complete_setup(request: Request, session_data: str = Depends(require_auth)):
+    """Save wizard choices and mark setup as complete"""
+    try:
+        username = session_data
+        
+        # Parse request body
+        data = await request.json()
+        
+        # Load current config
+        config_path = Path("config/config.yaml")
+        with open(config_path, 'r') as f:
+            config_data = yaml.safe_load(f)
+        
+        # Update cron schedule
+        if 'cron_schedule' in data:
+            config_data['cron_schedule'] = data['cron_schedule']
+        
+        # Start with a fresh exclusion list based on wizard choices
+        exclude_list = []
+        
+        # Handle self-update preference
+        self_update = data.get('self_update', 'notify')
+        if self_update == 'notify':
+            # User wants to be notified, not auto-update - exclude whalekeeper
+            exclude_list.append('whalekeeper')
+        
+        # Add any additional exclusions from wizard
+        if 'exclude_containers' in data:
+            for container in data['exclude_containers']:
+                if container not in exclude_list:
+                    exclude_list.append(container)
+        
+        if 'monitoring' not in config_data:
+            config_data['monitoring'] = {}
+        config_data['monitoring']['exclude_containers'] = exclude_list
+        
+        # Save updated config
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+        
+        # Mark setup as completed in database
+        db.mark_setup_completed(username)
+        
+        # Reload config in memory
+        from app.config import load_config
+        global config
+        config = load_config()
+        monitor.config = config
+        
+        return {
+            "success": True,
+            "message": "Setup completed successfully!"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error completing setup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -378,23 +487,29 @@ async def rollback(data: Dict, session_data: str = Depends(require_auth)):
         if not version:
             return {"success": False, "message": "Version not found"}
         
-        # Check if container is compose-managed
-        try:
-            container = monitor.client.containers.get(container_name)
-            labels = container.labels
-            is_compose = 'com.docker.compose.project' in labels
-        except:
-            is_compose = False
-        
         result = await monitor.rollback_container(container_name, version_id)
         
         if result.get("success"):
-            return {
+            response = {
                 "success": True, 
                 "message": f"Successfully rolled back {container_name}",
-                "image_name": result.get("best_tag", version['image_name']),
-                "is_compose": is_compose
+                "image_name": result.get("best_tag", version['image_name'])
             }
+            
+            # Add compose instructions if applicable
+            if result.get("is_compose"):
+                compose_info = result.get("compose_instructions", {})
+                response["is_compose"] = True
+                response["compose_message"] = (
+                    f"⚠️ Container rolled back to standalone mode.\n\n"
+                    f"To restore compose management:\n"
+                    f"1. docker stop {container_name}\n"
+                    f"2. docker rm {container_name}\n"
+                    f"3. cd {compose_info.get('directory', '/path/to/compose')}\n"
+                    f"4. docker compose up -d {compose_info.get('service', 'service')}"
+                )
+            
+            return response
         else:
             error_msg = result.get("error", "Unknown error occurred")
             return {"success": False, "message": f"Failed to rollback {container_name}: {error_msg}"}
