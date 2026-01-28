@@ -363,15 +363,15 @@ async function checkContainer(containerName) {
                                 // Special handling for self-update
                                 showModal(
                                     'Whalekeeper Updated',
-                                    '<div><span class="loading-spinner"></span>Whalekeeper is restarting with the new version...<br><br>The page will reload automatically when ready.</div>',
+                                    '<div><span class="loading-spinner"></span>Whalekeeper is restarting with the new version...<br><br>You will be redirected to login to see the updated version.</div>',
                                     null,
                                     null,
                                     true
                                 );
                                 
-                                // Wait for server to restart and reload page
+                                // Wait for server to restart and redirect to login
                                 await waitForServer();
-                                window.location.reload();
+                                window.location.href = '/login';
                             } else {
                                 // Step 5: Show result for normal containers
                                 showModal(
