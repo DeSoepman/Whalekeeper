@@ -156,6 +156,27 @@ class DockerMonitor:
         attrs = container.attrs
         config = attrs['Config']
         host_config = attrs['HostConfig']
+        network_settings = attrs.get('NetworkSettings', {})
+        
+        # Capture all networks and their aliases (critical for compose containers)
+        networks = {}
+        network_settings_networks = network_settings.get('Networks', {})
+        for network_name, network_config in network_settings_networks.items():
+            # Capture IP configuration (for static IPs in compose)
+            ipam_config = network_config.get('IPAMConfig')
+            ipv4_address = None
+            ipv6_address = None
+            
+            if ipam_config:
+                ipv4_address = ipam_config.get('IPv4Address')
+                ipv6_address = ipam_config.get('IPv6Address')
+            
+            networks[network_name] = {
+                'aliases': network_config.get('Aliases', []),
+                'links': network_config.get('Links'),
+                'ipv4_address': ipv4_address,
+                'ipv6_address': ipv6_address,
+            }
         
         return {
             'image': attrs['Config']['Image'],
@@ -164,6 +185,7 @@ class DockerMonitor:
             'volumes': host_config.get('Binds', []),
             'ports': host_config.get('PortBindings', {}),
             'network_mode': host_config.get('NetworkMode', 'bridge'),
+            'networks': networks,  # All networks with aliases
             'restart_policy': host_config.get('RestartPolicy', {}),
             'labels': config.get('Labels', {}),
             'command': config.get('Cmd'),
@@ -177,6 +199,70 @@ class DockerMonitor:
             'cap_drop': host_config.get('CapDrop'),
             'devices': host_config.get('Devices'),
         }
+    
+    def reconnect_networks(self, container, container_config: Dict):
+        """Reconnect container to all networks with proper aliases (critical for compose)"""
+        networks = container_config.get('networks', {})
+        
+        # Skip if no additional networks (container already on primary network from creation)
+        if not networks or len(networks) <= 1:
+            return
+        
+        # Get the network the container was created on (from network_mode)
+        primary_network = container_config.get('network_mode', 'bridge')
+        
+        try:
+            # Connect to additional networks with aliases
+            for network_name, network_config in networks.items():
+                # Skip the primary network (already connected during creation)
+                if network_name == primary_network:
+                    continue
+                
+                aliases = network_config.get('aliases', [])
+                links = network_config.get('links')
+                
+                # Filter out auto-generated aliases (container ID which is 12-char hex)
+                # Keep service names and other meaningful aliases
+                meaningful_aliases = []
+                for alias in aliases:
+                    # Skip if it's the container name itself
+                    if alias == container.name:
+                        continue
+                    # Skip if it looks like a container ID (12 hex chars)
+                    if len(alias) == 12 and all(c in '0123456789abcdef' for c in alias):
+                        continue
+                    meaningful_aliases.append(alias)
+                
+                try:
+                    network = self.client.networks.get(network_name)
+                    
+                    # Prepare connection parameters
+                    connect_params = {
+                        'container': container,
+                        'aliases': meaningful_aliases if meaningful_aliases else None,
+                        'links': links
+                    }
+                    
+                    # Add IP addresses if they were statically assigned
+                    ipv4_address = network_config.get('ipv4_address')
+                    ipv6_address = network_config.get('ipv6_address')
+                    
+                    if ipv4_address:
+                        connect_params['ipv4_address'] = ipv4_address
+                    if ipv6_address:
+                        connect_params['ipv6_address'] = ipv6_address
+                    
+                    network.connect(**connect_params)
+                    
+                    ip_info = f" with IP {ipv4_address}" if ipv4_address else ""
+                    logger.info(f"Reconnected {container.name} to network {network_name} with aliases: {meaningful_aliases}{ip_info}")
+                except docker.errors.NotFound:
+                    logger.warning(f"Network {network_name} not found, skipping reconnection")
+                except Exception as e:
+                    logger.error(f"Failed to reconnect to network {network_name}: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error reconnecting networks for {container.name}: {e}")
     
     def _build_docker_run_command(self, config: Dict, new_image_id: str) -> str:
         """Build a docker run command from container configuration"""
@@ -416,6 +502,9 @@ echo "Helper: Whalekeeper updated successfully"
                 detach=True
             )
             
+            # Reconnect to all networks with aliases
+            self.reconnect_networks(new_container, container_config)
+            
             logger.info(f"Successfully rolled back {container_name} to {old_image_id[:12]}")
             return True
             
@@ -485,6 +574,9 @@ echo "Helper: Whalekeeper updated successfully"
                 devices=container_config.get('devices'),
                 detach=True
             )
+            
+            # Reconnect to all networks with aliases (critical for compose containers)
+            self.reconnect_networks(new_container, container_config)
             
             # Monitor container health after update
             logger.info(f"Monitoring {container.name} health after update...")
@@ -950,6 +1042,9 @@ echo "Helper: Whalekeeper updated successfully"
                 devices=config.get('devices'),
                 detach=True
             )
+            
+            # Reconnect to all networks with aliases
+            self.reconnect_networks(new_container, config)
             
             logger.info(f"Successfully rolled back {container_name} to version {version_id}")
             
