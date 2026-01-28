@@ -19,12 +19,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY config/ ./config/
 COPY VERSION ./VERSION
+COPY entrypoint.sh /entrypoint.sh
+
+# Make entrypoint executable
+RUN chmod +x /entrypoint.sh
 
 # Create data directory
 RUN mkdir -p /app/data
 
 # Expose web interface port
 EXPOSE 5454
+
+# Use entrypoint to handle config initialization
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Run the application
 CMD ["python", "-m", "app.main"]
