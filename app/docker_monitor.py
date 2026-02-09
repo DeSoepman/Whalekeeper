@@ -200,26 +200,30 @@ class DockerMonitor:
             'devices': host_config.get('Devices'),
         }
     
-    def reconnect_networks(self, container, container_config: Dict):
-        """Reconnect container to all networks with proper aliases (critical for compose)"""
+    def reconnect_networks(self, container, container_config: Dict) -> bool:
+        """
+        Reconnect container to all networks with proper aliases (critical for compose).
+        Returns True if all networks reconnected successfully, False otherwise.
+        """
         networks = container_config.get('networks', {})
         
-        # Skip if no additional networks (container already on primary network from creation)
-        if not networks or len(networks) <= 1:
-            return
+        # Skip if no networks
+        if not networks:
+            return True
         
+        all_succeeded = True
         # Get the network the container was created on (from network_mode)
         primary_network = container_config.get('network_mode', 'bridge')
         
         try:
-            # Connect to additional networks with aliases
+            # Process all networks including primary (critical for compose containers with aliases)
             for network_name, network_config in networks.items():
-                # Skip the primary network (already connected during creation)
-                if network_name == primary_network:
-                    continue
+                is_primary = network_name == primary_network
                 
                 aliases = network_config.get('aliases', [])
                 links = network_config.get('links')
+                ipv4_address = network_config.get('ipv4_address')
+                ipv6_address = network_config.get('ipv6_address')
                 
                 # Filter out auto-generated aliases (container ID which is 12-char hex)
                 # Keep service names and other meaningful aliases
@@ -233,8 +237,22 @@ class DockerMonitor:
                         continue
                     meaningful_aliases.append(alias)
                 
+                # For primary network: if no aliases or static IPs to set, skip (already connected correctly)
+                # For compose containers, this is critical - they need aliases like service names
+                if is_primary and not meaningful_aliases and not ipv4_address and not ipv6_address:
+                    logger.debug(f"Skipping primary network {network_name} (no aliases or static IPs to set)")
+                    continue
+                
                 try:
                     network = self.client.networks.get(network_name)
+                    
+                    # If this is the primary network with aliases/IPs, disconnect and reconnect
+                    if is_primary:
+                        logger.info(f"Reconnecting primary network {network_name} with aliases: {meaningful_aliases}")
+                        try:
+                            network.disconnect(container, force=False)
+                        except Exception as e:
+                            logger.debug(f"Disconnect before reconnect: {e}")
                     
                     # Prepare connection parameters
                     connect_params = {
@@ -244,9 +262,6 @@ class DockerMonitor:
                     }
                     
                     # Add IP addresses if they were statically assigned
-                    ipv4_address = network_config.get('ipv4_address')
-                    ipv6_address = network_config.get('ipv6_address')
-                    
                     if ipv4_address:
                         connect_params['ipv4_address'] = ipv4_address
                     if ipv6_address:
@@ -257,12 +272,16 @@ class DockerMonitor:
                     ip_info = f" with IP {ipv4_address}" if ipv4_address else ""
                     logger.info(f"Reconnected {container.name} to network {network_name} with aliases: {meaningful_aliases}{ip_info}")
                 except docker.errors.NotFound:
-                    logger.warning(f"Network {network_name} not found, skipping reconnection")
+                    all_succeeded = False
                 except Exception as e:
                     logger.error(f"Failed to reconnect to network {network_name}: {e}")
+                    all_succeeded = False
         
         except Exception as e:
             logger.error(f"Error reconnecting networks for {container.name}: {e}")
+            all_succeeded = False
+        
+        return all_succeeded
     
     def _build_docker_run_command(self, config: Dict, new_image_id: str) -> str:
         """Build a docker run command from container configuration"""
@@ -503,7 +522,9 @@ echo "Helper: Whalekeeper updated successfully"
             )
             
             # Reconnect to all networks with aliases
-            self.reconnect_networks(new_container, container_config)
+            network_success = self.reconnect_networks(new_container, container_config)
+            if not network_success:
+                logger.warning(f"Rollback succeeded but some networks failed to reconnect for {container_name}")
             
             logger.info(f"Successfully rolled back {container_name} to {old_image_id[:12]}")
             return True
@@ -524,6 +545,25 @@ echo "Helper: Whalekeeper updated successfully"
         
         if is_self_update:
             return await self.self_update(update_info)
+        
+        # Check if this is a compose-managed container and docker CLI is available
+        is_compose_managed = 'com.docker.compose.project' in container.labels
+        if is_compose_managed:
+            compose_project = container.labels.get('com.docker.compose.project')
+            compose_service = container.labels.get('com.docker.compose.service')
+            compose_network = container.labels.get('com.docker.compose.network', 'N/A')
+            
+            logger.info(f"Detected compose-managed container: {container.name} (project={compose_project}, service={compose_service}, network={compose_network})")
+            
+            # Check if docker CLI is available for docker compose commands
+            import shutil
+            has_docker_cli = shutil.which('docker') is not None
+            
+            if has_docker_cli:
+                logger.info(f"Docker CLI available, using 'docker compose up -d' for {container.name}")
+                return await self.update_compose_container(update_info, compose_project, compose_service, send_notification)
+            else:
+                logger.info(f"Docker CLI not available, using Docker SDK with network preservation for {container.name}")
         
         try:
             
@@ -576,7 +616,14 @@ echo "Helper: Whalekeeper updated successfully"
             )
             
             # Reconnect to all networks with aliases (critical for compose containers)
-            self.reconnect_networks(new_container, container_config)
+            network_success = self.reconnect_networks(new_container, container_config)
+            
+            # Log special note for compose containers
+            if 'com.docker.compose.project' in container.labels:
+                logger.info(f"Compose container {container.name} updated with network preservation (networks and aliases reconnected)")
+                # For compose containers, network reconnection is critical
+                if not network_success:
+                    raise Exception("Failed to reconnect compose container to networks - this breaks service discovery")
             
             # Monitor container health after update
             logger.info(f"Monitoring {container.name} health after update...")
@@ -1044,7 +1091,9 @@ echo "Helper: Whalekeeper updated successfully"
             )
             
             # Reconnect to all networks with aliases
-            self.reconnect_networks(new_container, config)
+            network_success = self.reconnect_networks(new_container, config)
+            if not network_success:
+                logger.warning(f"Rollback succeeded but some networks failed to reconnect for {container_name}")
             
             logger.info(f"Successfully rolled back {container_name} to version {version_id}")
             
@@ -1172,6 +1221,8 @@ echo "Helper: Whalekeeper updated successfully"
             if update_info:
                 results['updates_found'] += 1
                 logger.info(f"Update available for {container.name}, starting update...")
+                
+                # Route to appropriate update method based on compose management
                 success = await self.update_container(update_info, send_notification=False)
                 
                 if success:

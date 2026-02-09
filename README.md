@@ -152,6 +152,27 @@ If something goes wrong (container crashes, health check fails, repeated restart
 
 For example, if you update nginx and it crashes because of a bad config, it'll be rolled back within seconds automatically.
 
+### Docker Compose support
+
+Whalekeeper automatically detects and handles Docker Compose managed containers.
+
+**What's preserved:**
+- Service name aliases (so other containers can find the service)
+- Custom networks and network configuration
+- Static IP addresses
+- Network links and dependencies
+
+**How it works:**
+- Compose containers are detected by their `com.docker.compose.project` label
+- Networks and aliases are captured before update
+- After recreating the container, it's reconnected with the same network configuration
+- Service discovery continues to work (e.g., other containers can still reach `database` or `redis`)
+
+**Important notes:**
+- For best results, ensure your compose services have health checks defined
+- If network reconnection fails during an update, the update will be rolled back automatically
+- Compose containers are updated individually, not as a complete compose project
+
 ### Manual rollback
 
 On the Dashboard tab, use the Rollback section to select a container and a previous version, then click Rollback.
