@@ -16,5 +16,8 @@ services:
       - ./app:/app/app
       # Live reload for version file
       - ./VERSION:/app/VERSION
+      # Mount tests for development
+      - ./tests:/app/tests
+      - ./pytest.ini:/app/pytest.ini
     environment:
       - TZ=Europe/Brussels

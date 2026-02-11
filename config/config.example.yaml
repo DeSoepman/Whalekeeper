@@ -12,6 +12,9 @@ cron_schedule: "0 22 * * 1"
 monitoring:
   # Optional: Exclude specific containers by name
   exclude_containers: []
+  # Automatically restart containers that depend on updated containers
+  # This solves issues like qbittorrent losing VPN when gluetun updates
+  auto_restart_dependents: true
 
 # Notification settings
 notifications:

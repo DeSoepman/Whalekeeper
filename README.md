@@ -173,6 +173,30 @@ Whalekeeper automatically detects and handles Docker Compose managed containers.
 - If network reconnection fails during an update, the update will be rolled back automatically
 - Compose containers are updated individually, not as a complete compose project
 
+### Dependency handling
+
+Whalekeeper automatically detects and restarts containers that depend on updated containers. This solves common issues like:
+- **qBittorrent losing VPN connection when Gluetun updates** - containers using `network_mode: container:gluetun` are automatically restarted
+- **Database client containers losing connection** - when a database container updates, dependent containers reconnect
+- **Linked containers** - containers using `--link` are restarted to re-establish connections
+
+**How it works:**
+- After successfully updating a container, Whalekeeper detects dependents by checking:
+  - `network_mode: container:<name>` (network stack sharing)
+  - `--link` connections (legacy Docker links)
+  - `volumes_from` (shared volumes)
+- Dependent containers are automatically restarted in the correct order
+- You'll receive notifications if any dependent containers fail to restart
+
+**Configuration:**
+```yaml
+monitoring:
+  # Automatically restart containers that depend on updated containers (default: true)
+  auto_restart_dependents: true
+```
+
+Set to `false` if you want to manage dependencies manually.
+
 ### Manual rollback
 
 On the Dashboard tab, use the Rollback section to select a container and a previous version, then click Rollback.

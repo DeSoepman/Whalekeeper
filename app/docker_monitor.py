@@ -283,6 +283,129 @@ class DockerMonitor:
         
         return all_succeeded
     
+    def detect_dependent_containers(self, container_name: str) -> List[docker.models.containers.Container]:
+        """
+        Detect containers that depend on the given container.
+        Checks for:
+        - network_mode: container:<name> (network sharing)
+        - --link connections (legacy)
+        - volumes_from (volume sharing)
+        
+        Returns list of dependent containers.
+        """
+        dependent_containers = []
+        
+        try:
+            all_containers = self.client.containers.list()
+            
+            for container in all_containers:
+                # Skip the container itself
+                if container.name == container_name:
+                    continue
+                
+                try:
+                    attrs = container.attrs
+                    host_config = attrs.get('HostConfig', {})
+                    
+                    # Check network_mode: container:<name>
+                    network_mode = host_config.get('NetworkMode', '')
+                    if network_mode == f'container:{container_name}':
+                        logger.info(f"Found dependent container: {container.name} (network_mode: container:{container_name})")
+                        dependent_containers.append(container)
+                        continue
+                    
+                    # Check for links (legacy but still used)
+                    links = host_config.get('Links', [])
+                    if links:
+                        for link in links:
+                            # Links are in format: /container_name:/target_name/alias
+                            if f'/{container_name}:' in link or f'/{container_name}/' in link:
+                                logger.info(f"Found dependent container: {container.name} (linked to {container_name})")
+                                dependent_containers.append(container)
+                                break
+                    
+                    # Check volumes_from (volume sharing)
+                    volumes_from = host_config.get('VolumesFrom')
+                    if volumes_from and container_name in volumes_from:
+                        logger.info(f"Found dependent container: {container.name} (volumes_from: {container_name})")
+                        dependent_containers.append(container)
+                        
+                except Exception as e:
+                    logger.debug(f"Error checking container {container.name} for dependencies: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error detecting dependent containers for {container_name}: {e}")
+        
+        return dependent_containers
+    
+    async def restart_dependent_containers(self, container_name: str) -> Dict[str, bool]:
+        """
+        Restart containers that depend on the given container.
+        Returns dict of {container_name: success_bool}
+        """
+        results = {}
+        
+        # Skip if auto-restart is disabled
+        if not self.config.monitoring.auto_restart_dependents:
+            logger.info(f"Auto-restart dependents disabled, skipping restart of containers dependent on {container_name}")
+            return results
+        
+        dependent_containers = self.detect_dependent_containers(container_name)
+        
+        if not dependent_containers:
+            logger.debug(f"No dependent containers found for {container_name}")
+            return results
+        
+        logger.info(f"Restarting {len(dependent_containers)} container(s) that depend on {container_name}")
+        
+        for container in dependent_containers:
+            try:
+                logger.info(f"Restarting dependent container: {container.name}")
+                container.restart(timeout=30)
+                
+                # Brief wait to ensure container starts
+                await asyncio.sleep(2)
+                
+                # Verify it's running
+                container.reload()
+                if container.status == 'running':
+                    logger.info(f"Successfully restarted dependent container: {container.name}")
+                    results[container.name] = True
+                    
+                    # Record in database
+                    self.db.add_update_history(
+                        container_name=container.name,
+                        container_id=container.id,
+                        old_image="N/A",
+                        new_image="N/A",
+                        old_image_id="",
+                        new_image_id="",
+                        status="restarted",
+                        message=f"Automatically restarted due to dependency on {container_name}"
+                    )
+                else:
+                    logger.warning(f"Dependent container {container.name} restarted but not running (status: {container.status})")
+                    results[container.name] = False
+                    
+            except Exception as e:
+                logger.error(f"Failed to restart dependent container {container.name}: {e}")
+                results[container.name] = False
+                
+                # Record failure
+                self.db.add_update_history(
+                    container_name=container.name,
+                    container_id=container.id if hasattr(container, 'id') else "",
+                    old_image="N/A",
+                    new_image="N/A",
+                    old_image_id="",
+                    new_image_id="",
+                    status="failed",
+                    message=f"Failed to restart after {container_name} update: {str(e)}"
+                )
+        
+        return results
+    
     def _build_docker_run_command(self, config: Dict, new_image_id: str) -> str:
         """Build a docker run command from container configuration"""
         cmd_parts = ['docker run -d']
@@ -707,6 +830,25 @@ echo "Helper: Whalekeeper updated successfully"
                     notification_type="success"
                 )
             
+            # Restart dependent containers (e.g., qbittorrent when gluetun updates)
+            dependent_results = await self.restart_dependent_containers(container.name)
+            if dependent_results:
+                logger.info(f"Restarted {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
+                
+                # Add info to notification if any dependents were restarted
+                if send_notification and dependent_results:
+                    failed_dependents = [name for name, success in dependent_results.items() if not success]
+                    if failed_dependents:
+                        await self.notifier.send_notification(
+                            title=f"⚠️ Dependent Container Restart Warning",
+                            message=f"Some containers dependent on {container.name} failed to restart",
+                            update_info={
+                                "Parent Container": container.name,
+                                "Failed Dependents": ", ".join(failed_dependents)
+                            },
+                            notification_type="warning"
+                        )
+            
             # Cleanup old versions
             self.db.cleanup_old_versions(
                 container.name, 
@@ -930,6 +1072,25 @@ echo "Helper: Whalekeeper updated successfully"
                     },
                     notification_type="success"
                 )
+            
+            # Restart dependent containers (e.g., qbittorrent when gluetun updates)
+            dependent_results = await self.restart_dependent_containers(container.name)
+            if dependent_results:
+                logger.info(f"Restarted {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
+                
+                # Add info to notification if any dependents were restarted
+                if send_notification and dependent_results:
+                    failed_dependents = [name for name, success in dependent_results.items() if not success]
+                    if failed_dependents:
+                        await self.notifier.send_notification(
+                            title=f"⚠️ Dependent Container Restart Warning",
+                            message=f"Some containers dependent on {container.name} failed to restart",
+                            update_info={
+                                "Parent Container": container.name,
+                                "Failed Dependents": ", ".join(failed_dependents)
+                            },
+                            notification_type="warning"
+                        )
             
             # Cleanup old versions
             self.db.cleanup_old_versions(

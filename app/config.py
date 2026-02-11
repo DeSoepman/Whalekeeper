@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings
 
 class MonitoringConfig(BaseModel):
     exclude_containers: List[str] = []
+    auto_restart_dependents: bool = True  # Restart containers that depend on updated containers
 
 
 class EmailConfig(BaseModel):
