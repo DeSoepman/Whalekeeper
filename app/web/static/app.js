@@ -360,6 +360,16 @@ async function checkContainer(containerName) {
                             const isSelfUpdate = containerName.toLowerCase() === 'whalekeeper';
                             
                             if (isSelfUpdate && updateResult.success) {
+                                // Get current version before waiting for restart
+                                let currentVersion = null;
+                                try {
+                                    const versionResponse = await fetch('/api/version');
+                                    const versionData = await versionResponse.json();
+                                    currentVersion = versionData.version;
+                                } catch (e) {
+                                    // Version fetch failed, continue without version check
+                                }
+                                
                                 // Special handling for self-update
                                 showModal(
                                     'Whalekeeper Updated',
@@ -369,8 +379,8 @@ async function checkContainer(containerName) {
                                     true
                                 );
                                 
-                                // Wait for server to restart and redirect to login
-                                await waitForServer();
+                                // Wait for server to restart and new version to be confirmed
+                                await waitForServer(currentVersion);
                                 window.location.href = '/login';
                             } else {
                                 // Step 5: Show result for normal containers
@@ -617,13 +627,15 @@ async function restartContainer() {
 }
 
 // Wait for server to come back online
-async function waitForServer() {
+async function waitForServer(currentVersion = null) {
     const maxAttempts = 30; // 30 seconds max
     const delayMs = 1000; // Check every second
     
     // Wait a bit before starting to check (give server time to restart)
     await new Promise(resolve => setTimeout(resolve, 2000));
     
+    // First, wait for server to be responsive
+    let serverOnline = false;
     for (let i = 0; i < maxAttempts; i++) {
         try {
             const response = await fetch('/api/containers', {
@@ -632,8 +644,8 @@ async function waitForServer() {
             });
             
             if (response.ok) {
-                // Server is back online
-                return;
+                serverOnline = true;
+                break;
             }
         } catch (error) {
             // Server still down, continue waiting
@@ -642,7 +654,32 @@ async function waitForServer() {
         await new Promise(resolve => setTimeout(resolve, delayMs));
     }
     
-    // If we get here, server didn't come back - reload anyway
+    // If version was provided (for self-update), wait until version changes
+    if (serverOnline && currentVersion) {
+        for (let i = 0; i < maxAttempts; i++) {
+            try {
+                const response = await fetch('/api/version', {
+                    method: 'GET',
+                    cache: 'no-cache'
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.version && data.version !== currentVersion) {
+                        // New version detected! Wait a bit more for full initialization
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        return;
+                    }
+                }
+            } catch (error) {
+                // Version check failed, continue waiting
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+    
+    // If we get here, server came back (or timeout) - proceed anyway
 }
 
 // Cron schedule translator
