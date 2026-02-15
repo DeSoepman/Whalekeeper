@@ -853,6 +853,7 @@ async function loadConfig() {
     updateCronDescription();
     
     // Monitoring
+    document.getElementById('auto_restart_dependents').checked = config.monitoring?.auto_restart_dependents !== false;
     document.getElementById('exclude_containers').value = (config.monitoring?.exclude_containers || []).join('\n');
     
     // Email
@@ -889,6 +890,7 @@ document.getElementById('config-form').addEventListener('submit', async function
     const formData = {
         cron_schedule: document.getElementById('cron_schedule').value,
         monitoring: {
+            auto_restart_dependents: document.getElementById('auto_restart_dependents').checked,
             exclude_containers: document.getElementById('exclude_containers').value
                 .split('\n').filter(x => x.trim())
         },

@@ -1159,6 +1159,13 @@
                     
                     <h3 style="margin-bottom: 15px;">Monitoring</h3>
                     <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="auto_restart_dependents" name="monitoring.auto_restart_dependents">
+                            Auto-restart dependent containers
+                        </label>
+                        <small>When a container updates, automatically restart containers that depend on it (e.g., qbittorrent when gluetun updates)</small>
+                    </div>
+                    <div class="form-group">
                         <label>Exclude Containers (one per line)</label>
                         <textarea id="exclude_containers" name="monitoring.exclude_containers" rows="3"></textarea>
                     </div>
