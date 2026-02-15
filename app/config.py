@@ -67,6 +67,69 @@ class Config(BaseModel):
     registry: RegistryConfig = RegistryConfig()
 
 
+def migrate_config(config_path: str = "config/config.yaml") -> bool:
+    """
+    Migrate config file to ensure all expected keys exist with default values.
+    Returns True if config was updated, False otherwise.
+    """
+    config_file = Path(config_path)
+    
+    if not config_file.exists():
+        return False
+    
+    try:
+        with open(config_file, 'r') as f:
+            config_data = yaml.safe_load(f) or {}
+        
+        updated = False
+        
+        # Ensure monitoring section exists
+        if 'monitoring' not in config_data:
+            config_data['monitoring'] = {}
+            updated = True
+        
+        if 'auto_restart_dependents' not in config_data.get('monitoring', {}):
+            config_data['monitoring']['auto_restart_dependents'] = True
+            print("Added missing config key: monitoring.auto_restart_dependents = True")
+            updated = True
+        
+        if 'exclude_containers' not in config_data.get('monitoring', {}):
+            config_data['monitoring']['exclude_containers'] = []
+            updated = True
+        
+        # Ensure web section has host
+        if 'web' not in config_data:
+            config_data['web'] = {}
+            updated = True
+        
+        if 'host' not in config_data.get('web', {}):
+            config_data['web']['host'] = '0.0.0.0'
+            print("Added missing config key: web.host = 0.0.0.0")
+            updated = True
+        
+        # Ensure webhook has method and headers
+        if 'notifications' in config_data and 'webhook' in config_data['notifications']:
+            webhook = config_data['notifications']['webhook']
+            if 'method' not in webhook:
+                webhook['method'] = 'POST'
+                updated = True
+            if 'headers' not in webhook:
+                webhook['headers'] = {}
+                updated = True
+        
+        # Write back if updated
+        if updated:
+            with open(config_file, 'w') as f:
+                yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+            print(f"Config file migrated: {config_path}")
+        
+        return updated
+        
+    except Exception as e:
+        print(f"Error migrating config: {e}")
+        return False
+
+
 def load_config(config_path: str = "config/config.yaml") -> Config:
     """Load configuration from YAML file"""
     config_file = Path(config_path)
@@ -80,6 +143,9 @@ def load_config(config_path: str = "config/config.yaml") -> Config:
         else:
             print(f"Warning: No config file found, using defaults")
             return Config()
+    
+    # Migrate config to add any missing keys
+    migrate_config(config_path)
     
     with open(config_file, 'r') as f:
         config_data = yaml.safe_load(f)
