@@ -274,8 +274,13 @@ class DockerMonitor:
                 except docker.errors.NotFound:
                     all_succeeded = False
                 except Exception as e:
-                    logger.error(f"Failed to reconnect to network {network_name}: {e}")
-                    all_succeeded = False
+                    # Treat "endpoint already exists" as success — container is already connected
+                    error_msg = str(e).lower()
+                    if 'endpoint' in error_msg and 'already exists' in error_msg:
+                        logger.debug(f"Container {container.name} already connected to {network_name} (endpoint exists), skipping")
+                    else:
+                        logger.error(f"Failed to reconnect to network {network_name}: {e}")
+                        all_succeeded = False
         
         except Exception as e:
             logger.error(f"Error reconnecting networks for {container.name}: {e}")
@@ -743,10 +748,17 @@ echo "Helper: Whalekeeper updated successfully"
             
             # Log special note for compose containers
             if 'com.docker.compose.project' in container.labels:
-                logger.info(f"Compose container {container.name} updated with network preservation (networks and aliases reconnected)")
-                # For compose containers, network reconnection is critical
-                if not network_success:
-                    raise Exception("Failed to reconnect compose container to networks - this breaks service discovery")
+                if network_success:
+                    logger.info(f"Compose container {container.name} updated with network preservation (networks and aliases reconnected)")
+                else:
+                    logger.warning(f"Compose container {container.name}: some networks failed to reconnect, service discovery may be affected")
+            
+            # Restart dependent containers now, before health check, so containers using
+            # network_mode: container:<name> (e.g. qbittorrent -> gluetun) are always
+            # restarted against the new container regardless of network reconnect outcome.
+            dependent_results = await self.restart_dependent_containers(container.name)
+            if dependent_results:
+                logger.info(f"Restarted {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
             
             # Monitor container health after update
             logger.info(f"Monitoring {container.name} health after update...")
@@ -830,24 +842,19 @@ echo "Helper: Whalekeeper updated successfully"
                     notification_type="success"
                 )
             
-            # Restart dependent containers (e.g., qbittorrent when gluetun updates)
-            dependent_results = await self.restart_dependent_containers(container.name)
-            if dependent_results:
-                logger.info(f"Restarted {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
-                
-                # Add info to notification if any dependents were restarted
-                if send_notification and dependent_results:
-                    failed_dependents = [name for name, success in dependent_results.items() if not success]
-                    if failed_dependents:
-                        await self.notifier.send_notification(
-                            title=f"⚠️ Dependent Container Restart Warning",
-                            message=f"Some containers dependent on {container.name} failed to restart",
-                            update_info={
-                                "Parent Container": container.name,
-                                "Failed Dependents": ", ".join(failed_dependents)
-                            },
-                            notification_type="warning"
-                        )
+            # Notify on any dependent restart failures (dependents were already restarted above)
+            if dependent_results and send_notification:
+                failed_dependents = [name for name, success in dependent_results.items() if not success]
+                if failed_dependents:
+                    await self.notifier.send_notification(
+                        title=f"⚠️ Dependent Container Restart Warning",
+                        message=f"Some containers dependent on {container.name} failed to restart",
+                        update_info={
+                            "Parent Container": container.name,
+                            "Failed Dependents": ", ".join(failed_dependents)
+                        },
+                        notification_type="warning"
+                    )
             
             # Cleanup old versions
             self.db.cleanup_old_versions(
