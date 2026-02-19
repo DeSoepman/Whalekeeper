@@ -709,6 +709,13 @@ echo "Helper: Whalekeeper updated successfully"
                 container_config=container_config
             )
             
+            # Prune old versions immediately so the limit is enforced regardless
+            # of whether this update succeeds, fails, or triggers an auto-rollback
+            self.db.cleanup_old_versions(
+                container.name,
+                self.config.rollback.keep_versions
+            )
+            
             # Stop and remove old container
             logger.info(f"Stopping container {container.name}")
             container.stop(timeout=30)
@@ -856,12 +863,6 @@ echo "Helper: Whalekeeper updated successfully"
                         notification_type="warning"
                     )
             
-            # Cleanup old versions
-            self.db.cleanup_old_versions(
-                container.name, 
-                self.config.rollback.keep_versions
-            )
-            
             logger.info(f"Successfully updated {container.name}")
             return True
             
@@ -915,6 +916,13 @@ echo "Helper: Whalekeeper updated successfully"
                 image_id=old_image.id,
                 image_tag=image_tag,
                 container_config=container_config
+            )
+            
+            # Prune old versions immediately so the limit is enforced regardless
+            # of whether this update succeeds, fails, or triggers an auto-rollback
+            self.db.cleanup_old_versions(
+                container.name,
+                self.config.rollback.keep_versions
             )
             
             # Get compose file path from container labels
@@ -1098,12 +1106,6 @@ echo "Helper: Whalekeeper updated successfully"
                             },
                             notification_type="warning"
                         )
-            
-            # Cleanup old versions
-            self.db.cleanup_old_versions(
-                container.name, 
-                self.config.rollback.keep_versions
-            )
             
             logger.info(f"Successfully updated compose container {container.name}")
             return True
