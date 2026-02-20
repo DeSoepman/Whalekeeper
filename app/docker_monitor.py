@@ -344,40 +344,92 @@ class DockerMonitor:
         
         return dependent_containers
     
-    async def restart_dependent_containers(self, container_name: str) -> Dict[str, bool]:
+    def stop_dependent_containers(self, container_name: str) -> List[docker.models.containers.Container]:
         """
-        Restart containers that depend on the given container.
+        Cleanly stop containers that depend on the given container before it is updated.
+        This prevents dependents from being left running with a broken network namespace
+        while the parent container is being recreated.
+        Returns list of containers that were successfully stopped (for later restart).
+        """
+        stopped = []
+
+        if not self.config.monitoring.auto_restart_dependents:
+            logger.info(f"Auto-restart dependents disabled, not pre-stopping containers dependent on {container_name}")
+            return stopped
+
+        dependent_containers = self.detect_dependent_containers(container_name)
+
+        if not dependent_containers:
+            logger.debug(f"No dependent containers found for {container_name}")
+            return stopped
+
+        logger.info(
+            f"Pre-stopping {len(dependent_containers)} dependent container(s) before updating {container_name}: "
+            f"{[c.name for c in dependent_containers]}"
+        )
+
+        for container in dependent_containers:
+            try:
+                logger.info(f"Stopping dependent container before parent update: {container.name}")
+                container.stop(timeout=30)
+                container.reload()
+                logger.info(f"Stopped dependent container: {container.name}")
+                stopped.append(container)
+            except Exception as e:
+                logger.error(f"Failed to stop dependent container {container.name}: {e}")
+
+        return stopped
+
+    async def restart_dependent_containers(
+        self,
+        container_name: str,
+        pre_stopped: Optional[List[docker.models.containers.Container]] = None
+    ) -> Dict[str, bool]:
+        """
+        Start/restart containers that depend on the given container.
+        If pre_stopped is provided (containers that were cleanly stopped before the parent
+        update), those are started directly with start() instead of restart().
         Returns dict of {container_name: success_bool}
         """
         results = {}
-        
+
         # Skip if auto-restart is disabled
         if not self.config.monitoring.auto_restart_dependents:
             logger.info(f"Auto-restart dependents disabled, skipping restart of containers dependent on {container_name}")
             return results
-        
-        dependent_containers = self.detect_dependent_containers(container_name)
-        
+
+        # Use the pre-stopped list if provided, otherwise detect and restart live containers
+        if pre_stopped is not None:
+            dependent_containers = pre_stopped
+            use_start = True  # containers are already stopped, just start them
+        else:
+            dependent_containers = self.detect_dependent_containers(container_name)
+            use_start = False
+
         if not dependent_containers:
             logger.debug(f"No dependent containers found for {container_name}")
             return results
-        
-        logger.info(f"Restarting {len(dependent_containers)} container(s) that depend on {container_name}")
-        
+
+        action = "Starting" if use_start else "Restarting"
+        logger.info(f"{action} {len(dependent_containers)} dependent container(s) for {container_name}")
+
         for container in dependent_containers:
             try:
-                logger.info(f"Restarting dependent container: {container.name}")
-                container.restart(timeout=30)
-                
+                logger.info(f"{action} dependent container: {container.name}")
+                if use_start:
+                    container.start()
+                else:
+                    container.restart(timeout=30)
+
                 # Brief wait to ensure container starts
                 await asyncio.sleep(2)
-                
+
                 # Verify it's running
                 container.reload()
                 if container.status == 'running':
-                    logger.info(f"Successfully restarted dependent container: {container.name}")
+                    logger.info(f"Successfully {'started' if use_start else 'restarted'} dependent container: {container.name}")
                     results[container.name] = True
-                    
+
                     # Record in database
                     self.db.add_update_history(
                         container_name=container.name,
@@ -390,13 +442,13 @@ class DockerMonitor:
                         message=f"Automatically restarted due to dependency on {container_name}"
                     )
                 else:
-                    logger.warning(f"Dependent container {container.name} restarted but not running (status: {container.status})")
+                    logger.warning(f"Dependent container {container.name} start attempted but not running (status: {container.status})")
                     results[container.name] = False
-                    
+
             except Exception as e:
-                logger.error(f"Failed to restart dependent container {container.name}: {e}")
+                logger.error(f"Failed to {'start' if use_start else 'restart'} dependent container {container.name}: {e}")
                 results[container.name] = False
-                
+
                 # Record failure
                 self.db.add_update_history(
                     container_name=container.name,
@@ -408,7 +460,7 @@ class DockerMonitor:
                     status="failed",
                     message=f"Failed to restart after {container_name} update: {str(e)}"
                 )
-        
+
         return results
     
     def _build_docker_run_command(self, config: Dict, new_image_id: str) -> str:
@@ -715,7 +767,11 @@ echo "Helper: Whalekeeper updated successfully"
                 container.name,
                 self.config.rollback.keep_versions
             )
-            
+
+            # Stop dependent containers BEFORE stopping the parent so they are not
+            # left running with a broken network namespace during the update window.
+            pre_stopped_dependents = self.stop_dependent_containers(container.name)
+
             # Stop and remove old container
             logger.info(f"Stopping container {container.name}")
             container.stop(timeout=30)
@@ -760,12 +816,12 @@ echo "Helper: Whalekeeper updated successfully"
                 else:
                     logger.warning(f"Compose container {container.name}: some networks failed to reconnect, service discovery may be affected")
             
-            # Restart dependent containers now, before health check, so containers using
-            # network_mode: container:<name> (e.g. qbittorrent -> gluetun) are always
-            # restarted against the new container regardless of network reconnect outcome.
-            dependent_results = await self.restart_dependent_containers(container.name)
+            # Start the pre-stopped dependents against the new container, before health check,
+            # so containers using network_mode: container:<name> (e.g. qbittorrent -> gluetun)
+            # are always started regardless of network reconnect outcome.
+            dependent_results = await self.restart_dependent_containers(container.name, pre_stopped=pre_stopped_dependents)
             if dependent_results:
-                logger.info(f"Restarted {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
+                logger.info(f"Started {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
             
             # Monitor container health after update
             logger.info(f"Monitoring {container.name} health after update...")
@@ -924,7 +980,11 @@ echo "Helper: Whalekeeper updated successfully"
                 container.name,
                 self.config.rollback.keep_versions
             )
-            
+
+            # Stop dependent containers BEFORE the compose update so they are not
+            # left running with a broken network namespace during the update window.
+            pre_stopped_dependents = self.stop_dependent_containers(container.name)
+
             # Get compose file path from container labels
             compose_file = container.labels.get('com.docker.compose.project.config_files')
             compose_working_dir = container.labels.get('com.docker.compose.project.working_dir')
@@ -1088,10 +1148,11 @@ echo "Helper: Whalekeeper updated successfully"
                     notification_type="success"
                 )
             
-            # Restart dependent containers (e.g., qbittorrent when gluetun updates)
-            dependent_results = await self.restart_dependent_containers(container.name)
+            # Start the pre-stopped dependents against the new container
+            # (e.g., qbittorrent when gluetun updates via compose)
+            dependent_results = await self.restart_dependent_containers(container.name, pre_stopped=pre_stopped_dependents)
             if dependent_results:
-                logger.info(f"Restarted {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
+                logger.info(f"Started {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
                 
                 # Add info to notification if any dependents were restarted
                 if send_notification and dependent_results:
