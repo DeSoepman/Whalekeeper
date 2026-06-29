@@ -734,11 +734,21 @@ function translateCron(cronExpression) {
     
     // Day of week
     if (weekday !== '*') {
-        const dayNum = parseInt(weekday);
-        if (dayNum >= 0 && dayNum <= 6) {
-            description += day === '*' && month === '*' ? ` on ${weekdays[dayNum]}` : ` (${weekdays[dayNum]})`;
+        const nthMatch = weekday.match(/^(\d)#(\d)$/);
+        const lastMatch = weekday.match(/^(\d)L$/i);
+        if (nthMatch) {
+            const ordinals = ['', 'first', 'second', 'third', 'fourth', 'fifth'];
+            const nth = ordinals[+nthMatch[2]] || `${nthMatch[2]}th`;
+            description += ` on the ${nth} ${weekdays[+nthMatch[1]]} of the month`;
+        } else if (lastMatch) {
+            description += ` on the last ${weekdays[+lastMatch[1]]} of the month`;
         } else {
-            description += ` on day ${weekday}`;
+            const dayNum = parseInt(weekday);
+            if (dayNum >= 0 && dayNum <= 6) {
+                description += day === '*' && month === '*' ? ` on ${weekdays[dayNum]}` : ` (${weekdays[dayNum]})`;
+            } else {
+                description += ` on day ${weekday}`;
+            }
         }
     }
     
