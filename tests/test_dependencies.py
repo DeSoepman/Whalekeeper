@@ -156,6 +156,7 @@ async def test_restart_dependent_containers_success(docker_monitor, mock_db):
     dependent_container.status = 'running'
     dependent_container.restart = Mock()
     dependent_container.reload = Mock()
+    dependent_container.attrs = {'HostConfig': {'NetworkMode': 'bridge'}}
     
     docker_monitor.detect_dependent_containers = Mock(return_value=[dependent_container])
     
@@ -195,6 +196,7 @@ async def test_restart_dependent_containers_failure(docker_monitor, mock_db):
     dependent_container.name = 'qbittorrent'
     dependent_container.id = 'abc123'
     dependent_container.restart = Mock(side_effect=Exception("Restart failed"))
+    dependent_container.attrs = {'HostConfig': {'NetworkMode': 'bridge'}}
     
     docker_monitor.detect_dependent_containers = Mock(return_value=[dependent_container])
     
@@ -221,3 +223,250 @@ async def test_restart_dependent_containers_no_dependents(docker_monitor):
     
     # Should return empty dict
     assert results == {}
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: containers sharing a parent's network namespace
+#
+# Docker resolves `network_mode: "service:gluetun"` to `container:<64-char id>`
+# at create time. Matching that against `container:<name>` never succeeds, so
+# dependents went undetected and were left pointing at a removed container.
+# ---------------------------------------------------------------------------
+
+GLUETUN_ID = '99b6fec3fb5f8000d824b6380b758b88ce74ba5152524b3c83dcd6159f5173d3'
+OTHER_ID = 'aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66'
+
+
+def _make_parent(name='gluetun', container_id=GLUETUN_ID):
+    parent = Mock()
+    parent.name = name
+    parent.id = container_id
+    parent.attrs = {'HostConfig': {'NetworkMode': 'bridge', 'Links': [], 'VolumesFrom': None}}
+    return parent
+
+
+def _make_netns_dependent(network_mode, name='qbittorrent'):
+    dependent = Mock()
+    dependent.name = name
+    dependent.id = 'dep0000000001'
+    dependent.attrs = {
+        'HostConfig': {'NetworkMode': network_mode, 'Links': [], 'VolumesFrom': None}
+    }
+    return dependent
+
+
+def test_detect_dependent_by_resolved_container_id(docker_monitor):
+    """Dependents must be found when Docker stored the parent's full container ID"""
+    parent = _make_parent()
+    dependent = _make_netns_dependent(f'container:{GLUETUN_ID}')
+
+    docker_monitor.client.containers.list = Mock(return_value=[parent, dependent])
+
+    dependents = docker_monitor.detect_dependent_containers('gluetun')
+
+    assert [c.name for c in dependents] == ['qbittorrent']
+
+
+def test_detect_dependent_by_short_container_id(docker_monitor):
+    """Docker accepts short IDs, so detection must handle them too"""
+    parent = _make_parent()
+    dependent = _make_netns_dependent(f'container:{GLUETUN_ID[:12]}')
+
+    docker_monitor.client.containers.list = Mock(return_value=[parent, dependent])
+
+    dependents = docker_monitor.detect_dependent_containers('gluetun')
+
+    assert [c.name for c in dependents] == ['qbittorrent']
+
+
+def test_detect_dependent_ignores_unrelated_container_id(docker_monitor):
+    """A container sharing a *different* container's namespace is not a dependent"""
+    parent = _make_parent()
+    unrelated = _make_netns_dependent(f'container:{OTHER_ID}', name='other-app')
+
+    docker_monitor.client.containers.list = Mock(return_value=[parent, unrelated])
+
+    dependents = docker_monitor.detect_dependent_containers('gluetun')
+
+    assert dependents == []
+
+
+def test_detect_dependent_volumes_from_with_access_mode(docker_monitor):
+    """volumes_from entries may carry a :ro/:rw suffix"""
+    parent = _make_parent(name='data-container', container_id=OTHER_ID)
+    dependent = Mock()
+    dependent.name = 'app'
+    dependent.id = 'dep2'
+    dependent.attrs = {
+        'HostConfig': {'NetworkMode': 'bridge', 'Links': [], 'VolumesFrom': ['data-container:ro']}
+    }
+
+    docker_monitor.client.containers.list = Mock(return_value=[parent, dependent])
+
+    dependents = docker_monitor.detect_dependent_containers('data-container')
+
+    assert [c.name for c in dependents] == ['app']
+
+
+def test_netns_parent_ref():
+    """Only container: network modes reference a namespace parent"""
+    assert DockerMonitor.netns_parent_ref(f'container:{GLUETUN_ID}') == GLUETUN_ID
+    assert DockerMonitor.netns_parent_ref('container:gluetun') == 'gluetun'
+    assert DockerMonitor.netns_parent_ref('bridge') is None
+    assert DockerMonitor.netns_parent_ref('host') is None
+    assert DockerMonitor.netns_parent_ref('') is None
+    assert DockerMonitor.netns_parent_ref(None) is None
+
+
+def test_build_run_kwargs_drops_options_owned_by_namespace_parent(docker_monitor):
+    """
+    Docker rejects hostname/ports/extra_hosts alongside container: network mode with
+    'conflicting options: hostname and the network mode' (HTTP 400).
+    """
+    container_config = {
+        'name': 'qbittorrent',
+        'environment': ['PUID=111'],
+        'volumes': ['/opt/qbittorrent/config:/config'],
+        'ports': {'8080/tcp': [{'HostPort': '8080'}]},
+        'network_mode': f'container:{GLUETUN_ID}',
+        # Docker auto-assigns the namespace parent's ID as the hostname
+        'hostname': GLUETUN_ID[:12],
+        'extra_hosts': ['example.com:1.2.3.4'],
+        'restart_policy': {'Name': 'always'},
+    }
+
+    kwargs = docker_monitor.build_run_kwargs(container_config, 'sha256:newimage')
+
+    assert 'hostname' not in kwargs
+    assert 'ports' not in kwargs
+    assert 'extra_hosts' not in kwargs
+    # Everything unrelated to the namespace survives
+    assert kwargs['network_mode'] == f'container:{GLUETUN_ID}'
+    assert kwargs['name'] == 'qbittorrent'
+    assert kwargs['environment'] == ['PUID=111']
+    assert kwargs['volumes'] == ['/opt/qbittorrent/config:/config']
+    assert kwargs['restart_policy'] == {'Name': 'always'}
+
+
+def test_build_run_kwargs_keeps_options_for_normal_containers(docker_monitor):
+    """Containers with their own namespace keep hostname and port bindings"""
+    container_config = {
+        'name': 'sonarr',
+        'network_mode': 'bridge',
+        'hostname': 'sonarr-host',
+        'ports': {'8989/tcp': [{'HostPort': '8989'}]},
+        'volumes': [],
+    }
+
+    kwargs = docker_monitor.build_run_kwargs(container_config, 'sha256:newimage')
+
+    assert kwargs['hostname'] == 'sonarr-host'
+    assert kwargs['ports'] == {'8989/tcp': [{'HostPort': '8989'}]}
+
+
+def test_recreate_netns_dependent_points_at_new_parent(docker_monitor):
+    """Recreation must rewrite the stale parent ID, which restart() cannot do"""
+    new_parent_id = 'f' * 64
+
+    dependent = Mock()
+    dependent.name = 'qbittorrent'
+    dependent.id = 'dep0000000001'
+    dependent.image.id = 'sha256:qbitimage'
+    dependent.attrs = {
+        'Config': {
+            'Image': 'emmercm/qbittorrent:latest',
+            'Env': ['PUID=111'],
+            'Labels': {},
+            'Hostname': GLUETUN_ID[:12],
+            'Cmd': None,
+            'Entrypoint': None,
+            'WorkingDir': '',
+            'User': '',
+        },
+        'HostConfig': {
+            'NetworkMode': f'container:{GLUETUN_ID}',
+            'Binds': ['/opt/qbittorrent/config:/config'],
+            'PortBindings': {},
+            'RestartPolicy': {'Name': 'always'},
+        },
+        'NetworkSettings': {'Networks': {}},
+    }
+    dependent.stop = Mock()
+    dependent.remove = Mock()
+
+    recreated = Mock()
+    docker_monitor.client.containers.run = Mock(return_value=recreated)
+
+    result = docker_monitor.recreate_netns_dependent(dependent, new_parent_id)
+
+    dependent.stop.assert_called_once()
+    dependent.remove.assert_called_once()
+    assert result is recreated
+
+    run_kwargs = docker_monitor.client.containers.run.call_args[1]
+    assert run_kwargs['network_mode'] == f'container:{new_parent_id}'
+    assert run_kwargs['name'] == 'qbittorrent'
+    assert run_kwargs['image'] == 'sha256:qbitimage'
+    # The stale hostname must not be replayed, or Docker returns a 400
+    assert 'hostname' not in run_kwargs
+
+
+@pytest.mark.asyncio
+async def test_restart_dependent_containers_recreates_netns_dependent(docker_monitor, mock_db):
+    """With a new parent ID, netns dependents are recreated rather than restarted"""
+    new_parent_id = 'f' * 64
+
+    dependent = _make_netns_dependent(f'container:{GLUETUN_ID}')
+    dependent.start = Mock()
+    dependent.restart = Mock()
+
+    recreated = Mock()
+    recreated.name = 'qbittorrent'
+    recreated.id = 'newdep000001'
+    recreated.status = 'running'
+    recreated.reload = Mock()
+
+    docker_monitor.detect_dependent_containers = Mock(return_value=[dependent])
+    docker_monitor.recreate_netns_dependent = Mock(return_value=recreated)
+
+    results = await docker_monitor.restart_dependent_containers(
+        'gluetun', new_parent_id=new_parent_id
+    )
+
+    docker_monitor.recreate_netns_dependent.assert_called_once_with(dependent, new_parent_id)
+    # A plain restart would fail with exit 128 against the removed parent
+    dependent.start.assert_not_called()
+    dependent.restart.assert_not_called()
+    assert results == {'qbittorrent': True}
+
+
+@pytest.mark.asyncio
+async def test_restart_dependent_containers_records_recreate_failure(docker_monitor, mock_db):
+    """A failed recreate is reported, since the old container is already gone"""
+    dependent = _make_netns_dependent(f'container:{GLUETUN_ID}')
+
+    docker_monitor.detect_dependent_containers = Mock(return_value=[dependent])
+    docker_monitor.recreate_netns_dependent = Mock(side_effect=Exception("create failed"))
+
+    results = await docker_monitor.restart_dependent_containers(
+        'gluetun', new_parent_id='f' * 64
+    )
+
+    assert results == {'qbittorrent': False}
+    call_args = mock_db.add_update_history.call_args[1]
+    assert call_args['status'] == 'failed'
+    assert 'docker compose up -d qbittorrent' in call_args['message']
+
+
+def test_reconnect_networks_skipped_for_netns_container(docker_monitor):
+    """Attaching a namespace-sharing container to a network is invalid"""
+    docker_monitor.client.networks = Mock()
+
+    result = docker_monitor.reconnect_networks(
+        Mock(),
+        {'name': 'qbittorrent', 'network_mode': f'container:{GLUETUN_ID}',
+         'networks': {'opt_default': {'aliases': ['qbittorrent']}}},
+    )
+
+    assert result is True
+    docker_monitor.client.networks.get.assert_not_called()
