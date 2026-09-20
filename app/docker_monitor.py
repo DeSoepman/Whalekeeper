@@ -340,17 +340,28 @@ class DockerMonitor:
         if not ref:
             return False
 
-        container_id = getattr(container, 'id', '') or ''
-        if ref == getattr(container, 'name', None) or ref == container_id:
+        if ref == getattr(container, 'name', None):
+            return True
+
+        return DockerMonitor.ref_matches_id(ref, getattr(container, 'id', '') or '')
+
+    @staticmethod
+    def ref_matches_id(ref: str, container_id: str) -> bool:
+        """
+        Check whether a Docker reference points at the given container ID, allowing
+        for the short-ID form. Names cannot be resolved here - use
+        ref_matches_container when a container object is available.
+        """
+        if not ref or not container_id:
+            return False
+
+        if ref == container_id:
             return True
 
         # Short IDs are a prefix of the full ID (conventionally 12 chars, but any
         # unambiguous prefix is valid). Require a sane length so that a stray
         # single character cannot match everything.
-        if len(ref) >= 6 and container_id.startswith(ref):
-            return True
-
-        return False
+        return len(ref) >= 6 and container_id.startswith(ref)
 
     def build_run_kwargs(self, container_config: Dict, image, network_mode: Optional[str] = None) -> Dict:
         """
@@ -585,7 +596,14 @@ class DockerMonitor:
             netns_ref = self.netns_parent_ref(
                 container.attrs.get('HostConfig', {}).get('NetworkMode', '')
             )
-            needs_recreate = bool(netns_ref and new_parent_id)
+            # Skip the recreate when the dependent already points at the new parent:
+            # the compose path may have recreated it for us, and recreating is not
+            # atomic, so doing it needlessly risks losing a healthy container.
+            needs_recreate = bool(
+                netns_ref
+                and new_parent_id
+                and not self.ref_matches_id(netns_ref, new_parent_id)
+            )
 
             if netns_ref and not new_parent_id:
                 logger.warning(
@@ -872,28 +890,10 @@ echo "Helper: Whalekeeper updated successfully"
             # Recreate container with old image
             logger.info(f"Recreating {container_name} with previous image {old_image_id[:12]}")
             
-            binds = container_config.get('volumes', [])
-            
+            # Recreate with the captured config. build_run_kwargs drops the options
+            # Docker rejects when the container joins another container's namespace.
             new_container = self.client.containers.run(
-                image=old_image.id,
-                name=container_config['name'],
-                environment=container_config.get('environment'),
-                volumes=binds,
-                ports=container_config.get('ports'),
-                network_mode=container_config.get('network_mode'),
-                restart_policy=container_config.get('restart_policy'),
-                labels=container_config.get('labels'),
-                command=container_config.get('command'),
-                entrypoint=container_config.get('entrypoint'),
-                working_dir=container_config.get('working_dir'),
-                user=container_config.get('user'),
-                hostname=container_config.get('hostname'),
-                extra_hosts=container_config.get('extra_hosts'),
-                privileged=container_config.get('privileged'),
-                cap_add=container_config.get('cap_add'),
-                cap_drop=container_config.get('cap_drop'),
-                devices=container_config.get('devices'),
-                detach=True
+                **self.build_run_kwargs(container_config, old_image.id)
             )
             
             # Reconnect to all networks with aliases

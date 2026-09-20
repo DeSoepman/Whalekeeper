@@ -1,3 +1,4 @@
+import docker
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from app.docker_monitor import DockerMonitor
@@ -470,3 +471,71 @@ def test_reconnect_networks_skipped_for_netns_container(docker_monitor):
 
     assert result is True
     docker_monitor.client.networks.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_restart_dependent_containers_skips_recreate_when_already_current(
+    docker_monitor, mock_db
+):
+    """
+    The compose path may already have recreated the dependent against the new parent.
+    Recreating is not atomic, so a dependent that is already correct is left alone.
+    """
+    new_parent_id = 'f' * 64
+
+    dependent = _make_netns_dependent(f'container:{new_parent_id}')
+    dependent.status = 'running'
+    dependent.reload = Mock()
+    dependent.start = Mock()
+    dependent.restart = Mock()
+
+    docker_monitor.detect_dependent_containers = Mock(return_value=[dependent])
+    docker_monitor.recreate_netns_dependent = Mock()
+
+    results = await docker_monitor.restart_dependent_containers(
+        'gluetun', new_parent_id=new_parent_id
+    )
+
+    docker_monitor.recreate_netns_dependent.assert_not_called()
+    dependent.restart.assert_called_once()
+    assert results == {'qbittorrent': True}
+
+
+def test_ref_matches_id_short_and_full():
+    """Short IDs are a prefix of the full ID; stray fragments must not match"""
+    assert DockerMonitor.ref_matches_id(GLUETUN_ID, GLUETUN_ID)
+    assert DockerMonitor.ref_matches_id(GLUETUN_ID[:12], GLUETUN_ID)
+    assert not DockerMonitor.ref_matches_id(OTHER_ID, GLUETUN_ID)
+    assert not DockerMonitor.ref_matches_id(GLUETUN_ID[:3], GLUETUN_ID)
+    assert not DockerMonitor.ref_matches_id('', GLUETUN_ID)
+    assert not DockerMonitor.ref_matches_id(GLUETUN_ID, '')
+
+
+@pytest.mark.asyncio
+async def test_rollback_drops_options_owned_by_namespace_parent(docker_monitor):
+    """
+    Rolling back a container that joins another container's namespace must not
+    replay hostname/ports, or Docker answers 400 and the rollback fails outright.
+    """
+    container_config = {
+        'name': 'qbittorrent',
+        'network_mode': f'container:{GLUETUN_ID}',
+        'hostname': GLUETUN_ID[:12],
+        'ports': {'8080/tcp': [{'HostPort': '8080'}]},
+        'volumes': ['/opt/qbittorrent/config:/config'],
+    }
+
+    docker_monitor.client.containers.get = Mock(side_effect=docker.errors.NotFound('gone'))
+    docker_monitor.client.images.get = Mock(return_value=Mock(id='sha256:oldimage'))
+    docker_monitor.client.containers.run = Mock(return_value=Mock())
+    docker_monitor.reconnect_networks = Mock(return_value=True)
+
+    result = await docker_monitor.rollback_after_failed_update(
+        'qbittorrent', 'sha256:oldimage', container_config, 'health check failed'
+    )
+
+    assert result is True
+    run_kwargs = docker_monitor.client.containers.run.call_args[1]
+    assert 'hostname' not in run_kwargs
+    assert 'ports' not in run_kwargs
+    assert run_kwargs['image'] == 'sha256:oldimage'
