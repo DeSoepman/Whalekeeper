@@ -15,6 +15,26 @@ from app.notifications import NotificationService
 
 logger = logging.getLogger(__name__)
 
+# Prefix Docker uses in HostConfig.NetworkMode when a container shares another
+# container's network namespace (compose: `network_mode: "service:<name>"`).
+NETNS_PREFIX = 'container:'
+
+# Options Docker rejects when a container joins another container's network
+# namespace, because they belong to the namespace owner and not to the joiner.
+# Passing any of these to containers.run() alongside network_mode=container:<id>
+# fails with: 'conflicting options: <option> and the network mode'.
+NETNS_CONFLICTING_OPTIONS = (
+    'hostname',
+    'domainname',
+    'mac_address',
+    'dns',
+    'dns_search',
+    'dns_opt',
+    'extra_hosts',
+    'ports',
+    'publish_all_ports',
+)
+
 
 class DockerMonitor:
     def __init__(self, config: Config, db: Database, notifier: NotificationService):
@@ -205,12 +225,21 @@ class DockerMonitor:
         Reconnect container to all networks with proper aliases (critical for compose).
         Returns True if all networks reconnected successfully, False otherwise.
         """
+        # A container sharing another container's network namespace owns no network
+        # endpoints of its own; attaching it to a network is rejected by Docker.
+        if self.netns_parent_ref(container_config.get('network_mode')):
+            logger.debug(
+                f"Skipping network reconnect for {container_config.get('name')}: "
+                f"shares the network namespace of {container_config.get('network_mode')}"
+            )
+            return True
+
         networks = container_config.get('networks', {})
-        
+
         # Skip if no networks
         if not networks:
             return True
-        
+
         all_succeeded = True
         # Get the network the container was created on (from network_mode)
         primary_network = container_config.get('network_mode', 'bridge')
@@ -288,37 +317,147 @@ class DockerMonitor:
         
         return all_succeeded
     
+    @staticmethod
+    def netns_parent_ref(network_mode: Optional[str]) -> Optional[str]:
+        """
+        Return the referenced parent container for a `container:<ref>` network mode,
+        or None if this container does not share another container's namespace.
+
+        Note that Docker stores the *resolved* reference here. Compose writes
+        `network_mode: "service:gluetun"`, but the inspected container reports
+        `container:<64-char id>`, so callers must never compare against a name.
+        """
+        if not isinstance(network_mode, str) or not network_mode.startswith(NETNS_PREFIX):
+            return None
+        return network_mode[len(NETNS_PREFIX):] or None
+
+    @staticmethod
+    def ref_matches_container(ref: str, container) -> bool:
+        """
+        Check whether a Docker reference (name, full ID, or short ID) points at
+        the given container. Docker accepts all three forms interchangeably.
+        """
+        if not ref:
+            return False
+
+        if ref == getattr(container, 'name', None):
+            return True
+
+        return DockerMonitor.ref_matches_id(ref, getattr(container, 'id', '') or '')
+
+    @staticmethod
+    def ref_matches_id(ref: str, container_id: str) -> bool:
+        """
+        Check whether a Docker reference points at the given container ID, allowing
+        for the short-ID form. Names cannot be resolved here - use
+        ref_matches_container when a container object is available.
+        """
+        if not ref or not container_id:
+            return False
+
+        if ref == container_id:
+            return True
+
+        # Short IDs are a prefix of the full ID (conventionally 12 chars, but any
+        # unambiguous prefix is valid). Require a sane length so that a stray
+        # single character cannot match everything.
+        return len(ref) >= 6 and container_id.startswith(ref)
+
+    def build_run_kwargs(self, container_config: Dict, image, network_mode: Optional[str] = None) -> Dict:
+        """
+        Build the keyword arguments for client.containers.run() from a captured
+        container configuration.
+
+        If the container joins another container's network namespace, the options
+        that Docker refuses in that mode are dropped - they are owned by the
+        namespace parent, so re-sending them is both meaningless and fatal.
+        """
+        effective_network_mode = network_mode or container_config.get('network_mode')
+
+        kwargs = {
+            'image': image,
+            'name': container_config['name'],
+            'environment': container_config.get('environment'),
+            'volumes': container_config.get('volumes', []),
+            'ports': container_config.get('ports'),
+            'network_mode': effective_network_mode,
+            'restart_policy': container_config.get('restart_policy'),
+            'labels': container_config.get('labels'),
+            'command': container_config.get('command'),
+            'entrypoint': container_config.get('entrypoint'),
+            'working_dir': container_config.get('working_dir'),
+            'user': container_config.get('user'),
+            'hostname': container_config.get('hostname'),
+            'extra_hosts': container_config.get('extra_hosts'),
+            'privileged': container_config.get('privileged'),
+            'cap_add': container_config.get('cap_add'),
+            'cap_drop': container_config.get('cap_drop'),
+            'devices': container_config.get('devices'),
+            'detach': True,
+        }
+
+        if self.netns_parent_ref(effective_network_mode):
+            dropped = [key for key in NETNS_CONFLICTING_OPTIONS if kwargs.get(key)]
+            for key in NETNS_CONFLICTING_OPTIONS:
+                kwargs.pop(key, None)
+            if dropped:
+                logger.info(
+                    f"Container {container_config['name']} shares a network namespace "
+                    f"({effective_network_mode}); dropping options owned by the namespace "
+                    f"parent: {dropped}"
+                )
+
+        return kwargs
+
     def detect_dependent_containers(self, container_name: str) -> List[docker.models.containers.Container]:
         """
         Detect containers that depend on the given container.
         Checks for:
-        - network_mode: container:<name> (network sharing)
+        - network_mode: container:<name|id> (network sharing)
         - --link connections (legacy)
         - volumes_from (volume sharing)
-        
+
         Returns list of dependent containers.
         """
         dependent_containers = []
-        
+
         try:
             all_containers = self.client.containers.list()
-            
+
+            # Resolve the parent so that dependents can be matched on name, full ID
+            # or short ID. Docker resolves `network_mode: "service:<name>"` to a
+            # container ID at create time, so matching on the name alone never hits.
+            parent = None
+            for candidate in all_containers:
+                if candidate.name == container_name:
+                    parent = candidate
+                    break
+            if parent is None:
+                try:
+                    parent = self.client.containers.get(container_name)
+                except Exception as e:
+                    logger.debug(f"Could not resolve parent container {container_name}: {e}")
+
             for container in all_containers:
                 # Skip the container itself
                 if container.name == container_name:
                     continue
-                
+
                 try:
                     attrs = container.attrs
                     host_config = attrs.get('HostConfig', {})
-                    
-                    # Check network_mode: container:<name>
+
+                    # Check network_mode: container:<name|id>
                     network_mode = host_config.get('NetworkMode', '')
-                    if network_mode == f'container:{container_name}':
-                        logger.info(f"Found dependent container: {container.name} (network_mode: container:{container_name})")
+                    netns_ref = self.netns_parent_ref(network_mode)
+                    if netns_ref and (
+                        netns_ref == container_name
+                        or (parent is not None and self.ref_matches_container(netns_ref, parent))
+                    ):
+                        logger.info(f"Found dependent container: {container.name} (network_mode: {network_mode})")
                         dependent_containers.append(container)
                         continue
-                    
+
                     # Check for links (legacy but still used)
                     links = host_config.get('Links', [])
                     if links:
@@ -328,13 +467,14 @@ class DockerMonitor:
                                 logger.info(f"Found dependent container: {container.name} (linked to {container_name})")
                                 dependent_containers.append(container)
                                 break
-                    
+
                     # Check volumes_from (volume sharing)
-                    volumes_from = host_config.get('VolumesFrom')
-                    if volumes_from and container_name in volumes_from:
+                    # Entries may carry an access-mode suffix, e.g. "data-container:ro".
+                    volumes_from = host_config.get('VolumesFrom') or []
+                    if any(entry.split(':', 1)[0] == container_name for entry in volumes_from):
                         logger.info(f"Found dependent container: {container.name} (volumes_from: {container_name})")
                         dependent_containers.append(container)
-                        
+
                 except Exception as e:
                     logger.debug(f"Error checking container {container.name} for dependencies: {e}")
                     continue
@@ -380,15 +520,52 @@ class DockerMonitor:
 
         return stopped
 
+    def recreate_netns_dependent(self, container, new_parent_id: str):
+        """
+        Recreate a container that shares its parent's network namespace, pointing it
+        at the parent's new container ID.
+
+        Starting such a container is not enough: HostConfig.NetworkMode still holds
+        the ID of the parent that was just removed, so start() fails with
+        'joining network namespace of container: No such container: <old id>'
+        (exit code 128). The stored network mode can only be changed by recreating.
+
+        Returns the new container object.
+        """
+        old_network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+        new_network_mode = f'{NETNS_PREFIX}{new_parent_id}'
+
+        # Capture the configuration and image before the container is removed.
+        container_config = self.get_container_config(container)
+        image = container.image.id
+
+        logger.info(
+            f"Recreating dependent container {container.name}: "
+            f"network mode {old_network_mode} -> {new_network_mode}"
+        )
+
+        try:
+            container.stop(timeout=30)
+        except Exception as e:
+            logger.debug(f"Dependent container {container.name} was not running: {e}")
+
+        container.remove()
+
+        run_kwargs = self.build_run_kwargs(container_config, image, network_mode=new_network_mode)
+        return self.client.containers.run(**run_kwargs)
+
     async def restart_dependent_containers(
         self,
         container_name: str,
-        pre_stopped: Optional[List[docker.models.containers.Container]] = None
+        pre_stopped: Optional[List[docker.models.containers.Container]] = None,
+        new_parent_id: Optional[str] = None
     ) -> Dict[str, bool]:
         """
         Start/restart containers that depend on the given container.
         If pre_stopped is provided (containers that were cleanly stopped before the parent
         update), those are started directly with start() instead of restart().
+        If new_parent_id is provided, dependents that share the parent's network
+        namespace are recreated against the new ID instead of merely restarted.
         Returns dict of {container_name: success_bool}
         """
         results = {}
@@ -414,12 +591,39 @@ class DockerMonitor:
         logger.info(f"{action} {len(dependent_containers)} dependent container(s) for {container_name}")
 
         for container in dependent_containers:
+            # A dependent sharing the parent's network namespace must be recreated:
+            # its stored network mode still points at the removed parent container.
+            netns_ref = self.netns_parent_ref(
+                container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            )
+            # Skip the recreate when the dependent already points at the new parent:
+            # the compose path may have recreated it for us, and recreating is not
+            # atomic, so doing it needlessly risks losing a healthy container.
+            needs_recreate = bool(
+                netns_ref
+                and new_parent_id
+                and not self.ref_matches_id(netns_ref, new_parent_id)
+            )
+
+            if netns_ref and not new_parent_id:
+                logger.warning(
+                    f"Dependent container {container.name} shares a network namespace but no new "
+                    f"parent ID was supplied; falling back to a plain restart, which will fail if "
+                    f"{container_name} was recreated"
+                )
+
             try:
-                logger.info(f"{action} dependent container: {container.name}")
-                if use_start:
-                    container.start()
+                if needs_recreate:
+                    logger.info(f"Recreating dependent container: {container.name}")
+                    container = self.recreate_netns_dependent(container, new_parent_id)
+                    verb = "recreated"
                 else:
-                    container.restart(timeout=30)
+                    logger.info(f"{action} dependent container: {container.name}")
+                    if use_start:
+                        container.start()
+                    else:
+                        container.restart(timeout=30)
+                    verb = "started" if use_start else "restarted"
 
                 # Brief wait to ensure container starts
                 await asyncio.sleep(2)
@@ -427,7 +631,7 @@ class DockerMonitor:
                 # Verify it's running
                 container.reload()
                 if container.status == 'running':
-                    logger.info(f"Successfully {'started' if use_start else 'restarted'} dependent container: {container.name}")
+                    logger.info(f"Successfully {verb} dependent container: {container.name}")
                     results[container.name] = True
 
                     # Record in database
@@ -439,15 +643,24 @@ class DockerMonitor:
                         old_image_id="",
                         new_image_id="",
                         status="restarted",
-                        message=f"Automatically restarted due to dependency on {container_name}"
+                        message=f"Automatically {verb} due to dependency on {container_name}"
                     )
                 else:
                     logger.warning(f"Dependent container {container.name} start attempted but not running (status: {container.status})")
                     results[container.name] = False
 
             except Exception as e:
-                logger.error(f"Failed to {'start' if use_start else 'restart'} dependent container {container.name}: {e}")
+                logger.error(f"Failed to {'recreate' if needs_recreate else 'restart'} dependent container {container.name}: {e}")
                 results[container.name] = False
+
+                message = f"Failed to restart after {container_name} update: {str(e)}"
+                if needs_recreate:
+                    # The old container is already gone at this point, so say how to
+                    # get the service back rather than leaving a bare stack trace.
+                    message = (
+                        f"Failed to recreate after {container_name} update: {str(e)}. "
+                        f"Recreate it manually, e.g. 'docker compose up -d {container.name}'"
+                    )
 
                 # Record failure
                 self.db.add_update_history(
@@ -458,7 +671,7 @@ class DockerMonitor:
                     old_image_id="",
                     new_image_id="",
                     status="failed",
-                    message=f"Failed to restart after {container_name} update: {str(e)}"
+                    message=message
                 )
 
         return results
@@ -677,28 +890,10 @@ echo "Helper: Whalekeeper updated successfully"
             # Recreate container with old image
             logger.info(f"Recreating {container_name} with previous image {old_image_id[:12]}")
             
-            binds = container_config.get('volumes', [])
-            
+            # Recreate with the captured config. build_run_kwargs drops the options
+            # Docker rejects when the container joins another container's namespace.
             new_container = self.client.containers.run(
-                image=old_image.id,
-                name=container_config['name'],
-                environment=container_config.get('environment'),
-                volumes=binds,
-                ports=container_config.get('ports'),
-                network_mode=container_config.get('network_mode'),
-                restart_policy=container_config.get('restart_policy'),
-                labels=container_config.get('labels'),
-                command=container_config.get('command'),
-                entrypoint=container_config.get('entrypoint'),
-                working_dir=container_config.get('working_dir'),
-                user=container_config.get('user'),
-                hostname=container_config.get('hostname'),
-                extra_hosts=container_config.get('extra_hosts'),
-                privileged=container_config.get('privileged'),
-                cap_add=container_config.get('cap_add'),
-                cap_drop=container_config.get('cap_drop'),
-                devices=container_config.get('devices'),
-                detach=True
+                **self.build_run_kwargs(container_config, old_image.id)
             )
             
             # Reconnect to all networks with aliases
@@ -780,30 +975,10 @@ echo "Helper: Whalekeeper updated successfully"
             # Create new container with same config but new image
             logger.info(f"Creating new container {container.name} with image {new_image.id[:12]}")
             
-            # Use binds directly from the original container configuration
-            binds = container_config.get('volumes', [])
-            
-            # Create new container
+            # Create new container. build_run_kwargs drops the options Docker rejects
+            # when the container joins another container's network namespace.
             new_container = self.client.containers.run(
-                image=new_image.id,
-                name=container_config['name'],
-                environment=container_config.get('environment'),
-                volumes=binds,  # Pass binds directly as list
-                ports=container_config.get('ports'),
-                network_mode=container_config.get('network_mode'),
-                restart_policy=container_config.get('restart_policy'),
-                labels=container_config.get('labels'),
-                command=container_config.get('command'),
-                entrypoint=container_config.get('entrypoint'),
-                working_dir=container_config.get('working_dir'),
-                user=container_config.get('user'),
-                hostname=container_config.get('hostname'),
-                extra_hosts=container_config.get('extra_hosts'),
-                privileged=container_config.get('privileged'),
-                cap_add=container_config.get('cap_add'),
-                cap_drop=container_config.get('cap_drop'),
-                devices=container_config.get('devices'),
-                detach=True
+                **self.build_run_kwargs(container_config, new_image.id)
             )
             
             # Reconnect to all networks with aliases (critical for compose containers)
@@ -819,7 +994,11 @@ echo "Helper: Whalekeeper updated successfully"
             # Start the pre-stopped dependents against the new container, before health check,
             # so containers using network_mode: container:<name> (e.g. qbittorrent -> gluetun)
             # are always started regardless of network reconnect outcome.
-            dependent_results = await self.restart_dependent_containers(container.name, pre_stopped=pre_stopped_dependents)
+            dependent_results = await self.restart_dependent_containers(
+                container.name,
+                pre_stopped=pre_stopped_dependents,
+                new_parent_id=new_container.id
+            )
             if dependent_results:
                 logger.info(f"Started {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
             
@@ -989,30 +1168,45 @@ echo "Helper: Whalekeeper updated successfully"
             compose_file = container.labels.get('com.docker.compose.project.config_files')
             compose_working_dir = container.labels.get('com.docker.compose.project.working_dir')
             
-            # Validate and sanitize paths to prevent command injection
+            # Validate and sanitize paths to prevent command injection.
+            # Prefer the config_files label: it records the compose file actually used,
+            # which is often not named 'docker-compose.yml' (compose.yaml, stack.yml,
+            # docker-compose.prod.yml, ...). Only fall back to guessing standard names
+            # inside the working directory when that label is missing.
             compose_file_path = None
-            if compose_working_dir:
+
+            if compose_file:
+                # The label is a comma-separated list when multiple -f files were used;
+                # the first one is the base file and is enough to identify the project.
+                first_config_file = compose_file.split(',')[0].strip()
+                try:
+                    file_path = Path(first_config_file).resolve()
+                    if file_path.is_absolute() and '..' not in first_config_file and file_path.exists():
+                        compose_file_path = str(file_path)
+                    else:
+                        logger.warning(f"Invalid or missing compose file path: {first_config_file}")
+                except (ValueError, OSError) as e:
+                    logger.warning(f"Invalid compose file path: {first_config_file}, error: {e}")
+
+            if not compose_file_path and compose_working_dir:
                 # Validate working directory path
                 try:
                     working_dir = Path(compose_working_dir).resolve()
                     # Ensure it's an absolute path and doesn't contain traversal attempts
                     if working_dir.is_absolute() and '..' not in compose_working_dir:
-                        compose_file_path = str(working_dir / 'docker-compose.yml')
+                        for candidate_name in ('compose.yaml', 'compose.yml',
+                                               'docker-compose.yaml', 'docker-compose.yml'):
+                            candidate = working_dir / candidate_name
+                            if candidate.exists():
+                                compose_file_path = str(candidate)
+                                break
+                        if not compose_file_path:
+                            logger.warning(f"No compose file found in working directory: {working_dir}")
                     else:
                         logger.warning(f"Invalid compose working directory: {compose_working_dir}")
                 except (ValueError, OSError) as e:
                     logger.warning(f"Invalid compose working directory path: {compose_working_dir}, error: {e}")
-            elif compose_file:
-                # Validate compose file path
-                try:
-                    file_path = Path(compose_file).resolve()
-                    if file_path.is_absolute() and '..' not in compose_file and file_path.exists():
-                        compose_file_path = str(file_path)
-                    else:
-                        logger.warning(f"Invalid compose file path: {compose_file}")
-                except (ValueError, OSError) as e:
-                    logger.warning(f"Invalid compose file path: {compose_file}, error: {e}")
-            
+
             if not compose_file_path:
                 raise Exception("No valid compose file path found in container labels")
             
@@ -1150,7 +1344,11 @@ echo "Helper: Whalekeeper updated successfully"
             
             # Start the pre-stopped dependents against the new container
             # (e.g., qbittorrent when gluetun updates via compose)
-            dependent_results = await self.restart_dependent_containers(container.name, pre_stopped=pre_stopped_dependents)
+            dependent_results = await self.restart_dependent_containers(
+                container.name,
+                pre_stopped=pre_stopped_dependents,
+                new_parent_id=new_container.id
+            )
             if dependent_results:
                 logger.info(f"Started {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
                 
