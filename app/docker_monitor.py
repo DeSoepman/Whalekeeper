@@ -192,7 +192,7 @@ class DockerMonitor:
                 ipv6_address = ipam_config.get('IPv6Address')
             
             networks[network_name] = {
-                'aliases': network_config.get('Aliases', []),
+                'aliases': network_config.get('Aliases') or [],
                 'links': network_config.get('Links'),
                 'ipv4_address': ipv4_address,
                 'ipv6_address': ipv6_address,
@@ -249,7 +249,7 @@ class DockerMonitor:
             for network_name, network_config in networks.items():
                 is_primary = network_name == primary_network
                 
-                aliases = network_config.get('aliases', [])
+                aliases = network_config.get('aliases') or []  # Docker reports null, not []
                 links = network_config.get('links')
                 ipv4_address = network_config.get('ipv4_address')
                 ipv6_address = network_config.get('ipv6_address')
@@ -875,6 +875,11 @@ echo "Helper: Whalekeeper updated successfully"
         """
         try:
             logger.warning(f"Auto-rollback triggered for {container_name}: {failure_reason}")
+
+            # Dependents were already recreated against the failed container during the
+            # update. Stop them now, or they keep running inside the failed container's
+            # network namespace after it is removed: no network and no published ports.
+            pre_stopped_dependents = self.stop_dependent_containers(container_name)
             
             # Get current (failed) container
             try:
@@ -900,6 +905,12 @@ echo "Helper: Whalekeeper updated successfully"
             network_success = self.reconnect_networks(new_container, container_config)
             if not network_success:
                 logger.warning(f"Rollback succeeded but some networks failed to reconnect for {container_name}")
+
+            await self.restart_dependent_containers(
+                container_name,
+                pre_stopped=pre_stopped_dependents,
+                new_parent_id=new_container.id
+            )
             
             logger.info(f"Successfully rolled back {container_name} to {old_image_id[:12]}")
             return True
@@ -1418,6 +1429,7 @@ echo "Helper: Whalekeeper updated successfully"
             compose_project = None
             compose_service = None
             compose_dir = None
+            pre_stopped_dependents = []
             
             try:
                 current_container = self.client.containers.get(container_name)
@@ -1444,6 +1456,7 @@ echo "Helper: Whalekeeper updated successfully"
                     # Fallback to tag
                     current_version_display = current_image.tags[0] if current_image.tags else current_image.id[:12]
                 
+                pre_stopped_dependents = self.stop_dependent_containers(container_name)
                 current_container.stop(timeout=30)
                 current_container.remove()
             except docker.errors.NotFound:
@@ -1483,8 +1496,8 @@ echo "Helper: Whalekeeper updated successfully"
             
             # If no version in labels, try to find versioned tags
             if not rollback_to_version:
-                if old_image.tags:
-                    versioned_tags = [tag for tag in old_image.tags if not any(x in tag.lower() for x in [':latest', ':stable', ':dev'])]
+                # A superseded image is often untagged (its tag moved to the newer pull)
+                versioned_tags = [tag for tag in old_image.tags if not any(x in tag.lower() for x in [':latest', ':stable', ':dev'])]
                 if versioned_tags:
                     best_tag = versioned_tags[0]
                 elif old_image.tags:
@@ -1493,36 +1506,22 @@ echo "Helper: Whalekeeper updated successfully"
             # Store the best tag for the response
             version['best_tag'] = best_tag
             
-            # Use binds directly from the saved configuration
-            binds = config.get('volumes', [])
-            
-            # Recreate container with old version
+            # Recreate container with old version. build_run_kwargs drops the options
+            # Docker rejects when the container joins another container's namespace.
             new_container = self.client.containers.run(
-                image=old_image.id,
-                name=config['name'],
-                environment=config.get('environment'),
-                volumes=binds,  # Pass binds directly as list
-                ports=config.get('ports'),
-                network_mode=config.get('network_mode'),
-                restart_policy=config.get('restart_policy'),
-                labels=config.get('labels'),
-                command=config.get('command'),
-                entrypoint=config.get('entrypoint'),
-                working_dir=config.get('working_dir'),
-                user=config.get('user'),
-                hostname=config.get('hostname'),
-                extra_hosts=config.get('extra_hosts'),
-                privileged=config.get('privileged'),
-                cap_add=config.get('cap_add'),
-                cap_drop=config.get('cap_drop'),
-                devices=config.get('devices'),
-                detach=True
+                **self.build_run_kwargs(config, old_image.id)
             )
             
             # Reconnect to all networks with aliases
             network_success = self.reconnect_networks(new_container, config)
             if not network_success:
                 logger.warning(f"Rollback succeeded but some networks failed to reconnect for {container_name}")
+
+            await self.restart_dependent_containers(
+                container_name,
+                pre_stopped=pre_stopped_dependents,
+                new_parent_id=new_container.id
+            )
             
             logger.info(f"Successfully rolled back {container_name} to version {version_id}")
             
