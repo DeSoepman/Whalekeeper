@@ -539,3 +539,87 @@ async def test_rollback_drops_options_owned_by_namespace_parent(docker_monitor):
     assert 'hostname' not in run_kwargs
     assert 'ports' not in run_kwargs
     assert run_kwargs['image'] == 'sha256:oldimage'
+
+
+@pytest.mark.asyncio
+async def test_rollback_after_failed_update_recreates_netns_dependents(docker_monitor):
+    """
+    The update already moved qbittorrent onto the new gluetun. When that gluetun fails
+    its health check and is rolled back, qbittorrent must follow it to the rolled-back
+    container, or it is left in the removed container's namespace with no network.
+    """
+    rolled_back_id = 'b' * 64
+    dependent = _make_netns_dependent(f'container:{OTHER_ID}')
+
+    docker_monitor.stop_dependent_containers = Mock(return_value=[dependent])
+    docker_monitor.restart_dependent_containers = AsyncMock(return_value={'qbittorrent': True})
+    docker_monitor.client.containers.get = Mock(side_effect=docker.errors.NotFound('gone'))
+    docker_monitor.client.images.get = Mock(return_value=Mock(id='sha256:oldimage'))
+    docker_monitor.client.containers.run = Mock(return_value=Mock(id=rolled_back_id))
+    docker_monitor.reconnect_networks = Mock(return_value=True)
+
+    result = await docker_monitor.rollback_after_failed_update(
+        'gluetun', 'sha256:oldimage', {'name': 'gluetun', 'network_mode': 'opt_default'},
+        'Docker health check failed (status: unhealthy)'
+    )
+
+    assert result is True
+    docker_monitor.stop_dependent_containers.assert_called_once_with('gluetun')
+    docker_monitor.restart_dependent_containers.assert_awaited_once_with(
+        'gluetun', pre_stopped=[dependent], new_parent_id=rolled_back_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_rollback_recreates_netns_dependents(docker_monitor, mock_db):
+    """A rollback from the UI replaces the parent too, so dependents must follow"""
+    rolled_back_id = 'b' * 64
+    dependent = _make_netns_dependent(f'container:{GLUETUN_ID}')
+
+    current = Mock()
+    current.labels = {}
+    current.image = Mock(labels={}, tags=['qmcgaw/gluetun:latest'], id='sha256:current')
+    old_image = Mock(labels={}, tags=[], id='sha256:oldimage')
+
+    mock_db.get_image_versions = Mock(return_value=[{
+        'id': 7,
+        'image_id': 'sha256:oldimage',
+        'image_name': 'qmcgaw/gluetun:latest',
+        'image_tag': 'latest',
+        'container_config': {'name': 'gluetun', 'network_mode': 'opt_default'},
+    }])
+    docker_monitor.stop_dependent_containers = Mock(return_value=[dependent])
+    docker_monitor.restart_dependent_containers = AsyncMock(return_value={'qbittorrent': True})
+    docker_monitor.client.containers.get = Mock(return_value=current)
+    docker_monitor.client.images.get = Mock(return_value=old_image)
+    docker_monitor.client.containers.run = Mock(return_value=Mock(id=rolled_back_id))
+    docker_monitor.reconnect_networks = Mock(return_value=True)
+
+    result = await docker_monitor.rollback_container('gluetun', 7)
+
+    assert result
+
+    docker_monitor.stop_dependent_containers.assert_called_once_with('gluetun')
+    docker_monitor.restart_dependent_containers.assert_awaited_once_with(
+        'gluetun', pre_stopped=[dependent], new_parent_id=rolled_back_id
+    )
+
+
+def test_reconnect_networks_handles_null_aliases(docker_monitor):
+    """
+    Docker reports "Aliases": null for containers created through the SDK, which
+    used to abort the whole reconnect with "'NoneType' object is not iterable".
+    """
+    network = Mock()
+    docker_monitor.client.networks.get = Mock(return_value=network)
+    container = Mock()
+    container.name = 'sonarr'
+
+    result = docker_monitor.reconnect_networks(
+        container,
+        {'name': 'sonarr', 'network_mode': 'opt_default',
+         'networks': {'opt_default': {'aliases': None, 'ipv4_address': '172.18.0.5'}}},
+    )
+
+    assert result is True
+    network.connect.assert_called_once()
