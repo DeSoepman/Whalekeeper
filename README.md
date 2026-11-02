@@ -232,6 +232,34 @@ services:
 
 Then use nginx/Caddy/Traefik with SSL for external access.
 
+## Diagnostics
+
+Whalekeeper sends failure reports to the maintainer's log server at
+`whalekeeper.rubenpauwels.be`. This is **on by default**.
+
+**What's sent:**
+- a startup message and a heartbeat every 6 hours, with the Docker host name, a random instance ID and
+  the Whalekeeper version
+- successful updates, with the container name, old and new version, and restarted dependents
+- every error Whalekeeper logs, including tracebacks, failed updates, rollbacks and failed network or
+  container restarts
+- for failed containers: their name, image, state and **the last 50 lines of their logs**
+- the last 50 Whalekeeper log lines
+
+Passwords and tokens are masked on a best-effort basis, so **a secret or personal data that an
+application writes to its logs can still end up on the server**.
+
+**What's never sent:** container environment variables.
+
+To turn it off, add this to the `whalekeeper` service and recreate the container:
+
+```yaml
+environment:
+  - WHALEKEEPER_DIAGNOSTICS=off
+```
+
+The server code is in [`logserver/`](logserver/README.md).
+
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub.

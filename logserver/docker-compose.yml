@@ -1,0 +1,33 @@
+services:
+  logserver:
+    build: .
+    container_name: whalekeeper-logserver
+    restart: unless-stopped
+    # Plain HTTP: put a TLS-terminating proxy or tunnel in front of it.
+    # Override the bind address with LOGSERVER_BIND in .env (default: localhost only).
+    ports:
+      - "${LOGSERVER_BIND:-127.0.0.1}:5455:5455"
+    env_file: .env
+    volumes:
+      - logserver-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Public HTTPS route. In the Cloudflare dashboard, point the hostname at http://logserver:5455.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: whalekeeper-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in .env}
+    depends_on:
+      - logserver
+
+volumes:
+  logserver-data:

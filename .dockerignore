@@ -1,0 +1,7 @@
+# Never bake local configuration or data into the published image.
+config/config.yaml
+data/
+logserver/
+.git/
+.env
+**/.env

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.config import Config
 from app.database import Database
+from app.diagnostics import ALREADY_REPORTED, container_log_tail, current_traceback, describe_container
 from app.notifications import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,84 @@ class DockerMonitor:
         self.client = docker.from_env()
         self.running = False
         self.update_cache = {}  # Cache of containers with updates: {container_name: update_info}
-    
+        self.diagnostics = None  # Optional DiagnosticsReporter, set at startup
+
+    def _capture_state(self, container_name: str, dependents: Optional[List] = None) -> Dict:
+        """
+        Snapshot container state for a diagnostics report. Call this before a rollback,
+        which removes the failed container. Never raises.
+        """
+        if not self.diagnostics:
+            return {}
+
+        state = {}
+        try:
+            state['container'] = self._describe_with_logs(self.client.containers.get(container_name))
+        except docker.errors.NotFound:
+            state['container'] = {'name': container_name, 'status': 'not_found'}
+        except Exception as e:
+            logger.warning(f"Could not capture state of {container_name}: {e}")
+
+        state['dependents'] = []
+        for dependent in dependents or []:
+            try:
+                dependent.reload()
+                state['dependents'].append(self._describe_with_logs(dependent))
+            except docker.errors.NotFound:
+                state['dependents'].append({'name': dependent.name, 'status': 'not_found'})
+            except Exception as e:
+                logger.warning(f"Could not capture state of dependent {dependent.name}: {e}")
+        return state
+
+    def _describe_with_logs(self, container) -> Dict:
+        description = describe_container(container)
+        try:
+            description['logs'] = container_log_tail(container)
+        except Exception as e:
+            logger.warning(f"Could not read logs of {container.name}: {e}")
+        return description
+
+    def _report(self, kind: str, level: str, container_name: str, message: str, **context) -> None:
+        """Send a diagnostics report. A reporting problem must never break an update."""
+        if not self.diagnostics:
+            return
+        try:
+            trace = current_traceback()
+            if trace:
+                context['traceback'] = trace
+            self.diagnostics.report(kind, level, message, container=container_name, context=context)
+        except Exception as e:
+            logger.warning(f"Could not queue diagnostics report: {e}")
+
+    def _report_update_success(self, container_name: str, old_image, new_image,
+                               health_started: float, dependent_results: Dict[str, bool]) -> None:
+        """Successful updates give failures their context: what changed just before."""
+        old_version = self._get_image_version(old_image)
+        new_version = self._get_image_version(new_image)
+        self._report(
+            "update_success", "info", container_name,
+            f"Updated {container_name} from {old_version} to {new_version}",
+            old_image=old_version,
+            new_image=new_version,
+            health_check_seconds=round(time.monotonic() - health_started),
+            dependents_restarted=[name for name, success in dependent_results.items() if success],
+        )
+
+    def _report_failed_dependents(self, parent_name: str, results: Dict[str, bool]) -> None:
+        failed = [name for name, success in results.items() if not success]
+        if not failed:
+            return
+        states = []
+        for name in failed:
+            state = self._capture_state(name).get('container')
+            if state:
+                states.append(state)
+        self._report(
+            "dependent_restart_failed", "error", parent_name,
+            f"Dependents of {parent_name} failed to restart: {', '.join(failed)}",
+            dependents=states,
+        )
+
     def _get_image_version(self, image) -> str:
         """Extract version from image labels or tags"""
         try:
@@ -240,7 +318,7 @@ class DockerMonitor:
         if not networks:
             return True
 
-        all_succeeded = True
+        failed_networks = {}
         # Get the network the container was created on (from network_mode)
         primary_network = container_config.get('network_mode', 'bridge')
         
@@ -249,7 +327,8 @@ class DockerMonitor:
             for network_name, network_config in networks.items():
                 is_primary = network_name == primary_network
                 
-                aliases = network_config.get('aliases', [])
+                # Docker returns null, not an empty list, for networks without aliases.
+                aliases = network_config.get('aliases') or []
                 links = network_config.get('links')
                 ipv4_address = network_config.get('ipv4_address')
                 ipv6_address = network_config.get('ipv6_address')
@@ -301,21 +380,30 @@ class DockerMonitor:
                     ip_info = f" with IP {ipv4_address}" if ipv4_address else ""
                     logger.info(f"Reconnected {container.name} to network {network_name} with aliases: {meaningful_aliases}{ip_info}")
                 except docker.errors.NotFound:
-                    all_succeeded = False
+                    failed_networks[network_name] = "Network not found"
                 except Exception as e:
                     # Treat "endpoint already exists" as success — container is already connected
                     error_msg = str(e).lower()
                     if 'endpoint' in error_msg and 'already exists' in error_msg:
                         logger.debug(f"Container {container.name} already connected to {network_name} (endpoint exists), skipping")
                     else:
-                        logger.error(f"Failed to reconnect to network {network_name}: {e}")
-                        all_succeeded = False
+                        logger.error(f"Failed to reconnect to network {network_name}: {e}", extra=ALREADY_REPORTED)
+                        failed_networks[network_name] = str(e)
         
         except Exception as e:
-            logger.error(f"Error reconnecting networks for {container.name}: {e}")
-            all_succeeded = False
-        
-        return all_succeeded
+            logger.error(f"Error reconnecting networks for {container.name}: {e}", extra=ALREADY_REPORTED)
+            failed_networks['*'] = str(e)
+
+        if failed_networks:
+            # The update itself can still count as a success, so this would go unnoticed.
+            self._report(
+                "network_reconnect_failed", "error", container.name,
+                f"Could not reconnect {container.name} to: {', '.join(failed_networks)}",
+                failed_networks=failed_networks,
+                **self._capture_state(container.name)
+            )
+
+        return not failed_networks
     
     @staticmethod
     def netns_parent_ref(network_mode: Optional[str]) -> Optional[str]:
@@ -783,10 +871,15 @@ echo "Helper: Whalekeeper updated successfully"
             )
             
             logger.info("Self-update scheduled - Whalekeeper will restart in 10 seconds")
+            self._report(
+                "self_update_started", "info", "whalekeeper",
+                f"Self-update started: {self._get_image_version(old_image)} to {self._get_image_version(new_image)}",
+            )
             return True
             
         except Exception as e:
-            logger.error(f"Failed to schedule self-update: {e}")
+            logger.error(f"Failed to schedule self-update: {e}", extra=ALREADY_REPORTED)
+            self._report("self_update_failed", "error", "whalekeeper", f"Failed to schedule self-update: {e}")
             return False
     
     async def monitor_container_health(self, container_name: str, old_image_id: str) -> tuple[bool, str]:
@@ -939,7 +1032,8 @@ echo "Helper: Whalekeeper updated successfully"
                 return await self.update_compose_container(update_info, compose_project, compose_service, send_notification)
             else:
                 logger.info(f"Docker CLI not available, using Docker SDK with network preservation for {container.name}")
-        
+
+        pre_stopped_dependents = []
         try:
             
             # Save current configuration for rollback
@@ -1002,8 +1096,11 @@ echo "Helper: Whalekeeper updated successfully"
             if dependent_results:
                 logger.info(f"Started {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
             
+            self._report_failed_dependents(container.name, dependent_results)
+
             # Monitor container health after update
             logger.info(f"Monitoring {container.name} health after update...")
+            health_started = time.monotonic()
             is_healthy, failure_reason = await self.monitor_container_health(
                 container.name, 
                 old_image.id
@@ -1011,7 +1108,8 @@ echo "Helper: Whalekeeper updated successfully"
             
             if not is_healthy:
                 # Health check failed - trigger auto-rollback
-                logger.error(f"Health check failed for {container.name}: {failure_reason}")
+                logger.error(f"Health check failed for {container.name}: {failure_reason}", extra=ALREADY_REPORTED)
+                failure_state = self._capture_state(container.name, pre_stopped_dependents)
                 
                 # Record failed update with health check info
                 self.db.add_update_history(
@@ -1035,6 +1133,15 @@ echo "Helper: Whalekeeper updated successfully"
                     failure_reason
                 )
                 
+                self._report(
+                    "update_rolled_back", "warning" if rollback_success else "error", container.name,
+                    f"Health check failed: {failure_reason}",
+                    rollback_success=rollback_success,
+                    old_image=self._get_image_version(old_image),
+                    new_image=self._get_image_version(new_image),
+                    **failure_state
+                )
+
                 # Send rollback notification
                 if send_notification:
                     await self.notifier.send_notification(
@@ -1099,10 +1206,17 @@ echo "Helper: Whalekeeper updated successfully"
                     )
             
             logger.info(f"Successfully updated {container.name}")
+            self._report_update_success(container.name, old_image, new_image, health_started, dependent_results)
             return True
             
         except Exception as e:
-            logger.error(f"Failed to update {container.name}: {e}")
+            logger.error(f"Failed to update {container.name}: {e}", extra=ALREADY_REPORTED)
+            self._report(
+                "update_failed", "error", container.name, str(e),
+                old_image=self._get_image_version(old_image),
+                new_image=self._get_image_version(new_image),
+                **self._capture_state(container.name, pre_stopped_dependents)
+            )
             
             # Record failure
             self.db.add_update_history(
@@ -1137,7 +1251,8 @@ echo "Helper: Whalekeeper updated successfully"
         old_image = update_info['old_image']
         new_image = update_info['new_image']
         image_name = update_info['image_name']
-        
+
+        pre_stopped_dependents = []
         try:
             logger.info(f"Updating compose-managed container {container.name} using docker-compose")
             
@@ -1236,6 +1351,7 @@ echo "Helper: Whalekeeper updated successfully"
             
             # Monitor container health after update
             logger.info(f"Monitoring {container.name} health after compose update...")
+            health_started = time.monotonic()
             is_healthy, failure_reason = await self.monitor_container_health(
                 container.name, 
                 old_image.id
@@ -1243,7 +1359,7 @@ echo "Helper: Whalekeeper updated successfully"
             
             if not is_healthy:
                 # Health check failed - rollback to standalone container to keep service running
-                logger.error(f"Health check failed for compose container {container.name}: {failure_reason}")
+                logger.error(f"Health check failed for compose container {container.name}: {failure_reason}", extra=ALREADY_REPORTED)
                 logger.info(f"Auto-rolling back {container.name} to standalone container")
                 
                 # Record failed update with rollback info
@@ -1261,11 +1377,20 @@ echo "Helper: Whalekeeper updated successfully"
                 )
                 
                 # Perform rollback to standalone container
+                failure_state = self._capture_state(container.name, pre_stopped_dependents)
                 rollback_success = await self.rollback_after_failed_update(
                     container.name,
                     old_image.id,
                     container_config,
                     failure_reason
+                )
+                self._report(
+                    "update_rolled_back", "warning" if rollback_success else "error", container.name,
+                    f"Health check failed: {failure_reason}",
+                    rollback_success=rollback_success,
+                    old_image=self._get_image_version(old_image),
+                    new_image=self._get_image_version(new_image),
+                    **failure_state
                 )
                 
                 # Send notification with clear instructions
@@ -1352,6 +1477,8 @@ echo "Helper: Whalekeeper updated successfully"
             if dependent_results:
                 logger.info(f"Started {len(dependent_results)} dependent container(s) for {container.name}: {list(dependent_results.keys())}")
                 
+                self._report_failed_dependents(container.name, dependent_results)
+
                 # Add info to notification if any dependents were restarted
                 if send_notification and dependent_results:
                     failed_dependents = [name for name, success in dependent_results.items() if not success]
@@ -1367,10 +1494,17 @@ echo "Helper: Whalekeeper updated successfully"
                         )
             
             logger.info(f"Successfully updated compose container {container.name}")
+            self._report_update_success(container.name, old_image, new_image, health_started, dependent_results)
             return True
             
         except Exception as e:
-            logger.error(f"Failed to update compose container {container.name}: {e}")
+            logger.error(f"Failed to update compose container {container.name}: {e}", extra=ALREADY_REPORTED)
+            self._report(
+                "update_failed", "error", container.name, f"Compose update failed: {e}",
+                old_image=self._get_image_version(old_image),
+                new_image=self._get_image_version(new_image),
+                **self._capture_state(container.name, pre_stopped_dependents)
+            )
             
             # Record failure
             self.db.add_update_history(
@@ -1596,8 +1730,12 @@ echo "Helper: Whalekeeper updated successfully"
             return result
             
         except Exception as e:
-            logger.error(f"Failed to rollback {container_name}: {e}")
-            
+            logger.error(f"Failed to rollback {container_name}: {e}", extra=ALREADY_REPORTED)
+            self._report(
+                "manual_rollback_failed", "error", container_name, str(e),
+                **self._capture_state(container_name)
+            )
+
             # Try to get version info for better logging
             try:
                 if 'version' not in locals():

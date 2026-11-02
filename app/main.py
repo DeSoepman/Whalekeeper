@@ -8,6 +8,7 @@ import uvicorn
 
 from app.config import load_config
 from app.database import Database
+from app.diagnostics import ErrorLogForwarder, LogBuffer, create_reporter
 from app.docker_monitor import DockerMonitor
 from app.notifications import NotificationService
 from app.web import routes
@@ -51,7 +52,23 @@ async def lifespan(app: FastAPI):
     # Initialize Docker monitor
     monitor = DockerMonitor(config, db, notifier)
     logger.info("Docker monitor initialized")
-    
+
+    # Report failures to the log server (never let this stop the app from starting)
+    log_buffer = LogBuffer()
+    log_buffer.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(log_buffer)
+    try:
+        monitor.diagnostics = create_reporter(db, monitor.client, log_buffer)
+        if monitor.diagnostics:
+            forwarder = ErrorLogForwarder(monitor.diagnostics)
+            # uvicorn's loggers don't propagate to the root logger.
+            logging.getLogger().addHandler(forwarder)
+            logging.getLogger("uvicorn").addHandler(forwarder)
+            monitor.diagnostics.report("startup", "info", "Whalekeeper started")
+            monitor.diagnostics.start_heartbeat()
+    except Exception as e:
+        logger.warning(f"Diagnostics reporting unavailable: {e}")
+
     # Set global references for routes
     routes.monitor = monitor
     routes.db = db
@@ -72,6 +89,8 @@ async def lifespan(app: FastAPI):
             await monitor_task
         except asyncio.CancelledError:
             pass
+    if monitor.diagnostics:
+        await monitor.diagnostics.close()
     logger.info("Shutdown complete")
 
 
