@@ -979,7 +979,11 @@ document.getElementById('config-form').addEventListener('submit', async function
     });
     
     const result = await response.json();
-    showNotification('Configuration Saved', result.message, 'success');
+    if (response.ok) {
+        showNotification('Configuration Saved', result.message, 'success');
+    } else {
+        showNotification('Save Failed', result.detail, 'error');
+    }
 });
 
 // Save notification configuration
@@ -1027,7 +1031,7 @@ document.getElementById('notification-form').addEventListener('submit', async fu
     const result = await response.json();
     showModal(
         result.success ? 'Settings Saved' : 'Save Failed',
-        result.message,
+        result.message || result.detail,
         'OK',
         () => closeModal(),
         false,

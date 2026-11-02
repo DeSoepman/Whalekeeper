@@ -2,10 +2,10 @@ from fastapi import APIRouter, HTTPException, Response, Cookie, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from starlette.requests import Request
 from typing import List, Dict, Optional
 import logging
-import yaml
 from pathlib import Path
 import os
 import secrets
@@ -14,7 +14,7 @@ from passlib.context import CryptContext
 
 from app.docker_monitor import DockerMonitor
 from app.database import Database
-from app.config import Config
+from app.config import Config, load_config, merge_config, save_config as store_config
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,13 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 monitor: DockerMonitor = None
 db: Database = None
 config: Config = None
+
+
+def reload_config() -> None:
+    """Make a saved configuration effective for the running app."""
+    global config
+    config = load_config(db)
+    monitor.config = config
 
 
 def get_session_cookie(session: Optional[str] = Cookie(None)) -> Optional[str]:
@@ -207,13 +214,11 @@ async def complete_setup(request: Request, session_data: str = Depends(require_a
         data = await request.json()
         
         # Load current config
-        config_path = Path("config/config.yaml")
-        with open(config_path, 'r') as f:
-            config_data = yaml.safe_load(f)
+        current = Config(**db.get_config_data())
         
         # Update cron schedule
         if 'cron_schedule' in data:
-            config_data['cron_schedule'] = data['cron_schedule']
+            current.cron_schedule = data['cron_schedule']
         
         # Start with a fresh exclusion list based on wizard choices
         exclude_list = []
@@ -230,22 +235,16 @@ async def complete_setup(request: Request, session_data: str = Depends(require_a
                 if container not in exclude_list:
                     exclude_list.append(container)
         
-        if 'monitoring' not in config_data:
-            config_data['monitoring'] = {}
-        config_data['monitoring']['exclude_containers'] = exclude_list
+        current.monitoring.exclude_containers = exclude_list
         
         # Save updated config
-        with open(config_path, 'w') as f:
-            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+        store_config(db, current)
         
         # Mark setup as completed in database
         db.mark_setup_completed(username)
         
         # Reload config in memory
-        from app.config import load_config
-        global config
-        config = load_config()
-        monitor.config = config
+        reload_config()
         
         return {
             "success": True,
@@ -523,12 +522,7 @@ async def rollback(data: Dict, session_data: str = Depends(require_auth)):
 async def get_config(session_data: str = Depends(require_auth)):
     """Get current configuration"""
     try:
-        config_path = Path("config/config.yaml")
-        if not config_path.exists():
-            config_path = Path("config/config.example.yaml")
-        
-        with open(config_path, 'r') as f:
-            config_data = yaml.safe_load(f)
+        config_data = db.get_config_data()
         
         # Replace SMTP password with value from database (or masked placeholder)
         smtp_password = db.get_secure_setting("smtp_password")
@@ -547,6 +541,17 @@ async def get_config(session_data: str = Depends(require_auth)):
 async def save_config(data: Dict, session_data: str = Depends(require_auth)):
     """Save configuration"""
     try:
+        data = merge_config(db.get_config_data() or {}, data)
+
+        # Reject invalid values now: stored as-is, they would stop the app from starting.
+        try:
+            Config(**data)
+        except ValidationError as e:
+            problems = "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in e.errors()
+            )
+            raise HTTPException(status_code=400, detail=f"Invalid configuration: {problems}")
+
         # Extract and save SMTP password to database if provided
         smtp_password = data.get('notifications', {}).get('email', {}).get('password', '')
         
@@ -557,20 +562,18 @@ async def save_config(data: Dict, session_data: str = Depends(require_auth)):
         else:
             logger.info(f"Skipping password save (empty or masked): '{smtp_password}'")
         
-        # Remove password from config data before saving to file
+        # The password is kept separately from the rest of the configuration
         if data.get('notifications', {}).get('email'):
             data['notifications']['email']['password'] = ''
         
-        config_path = Path("config/config.yaml")
-        
-        # Save to config.yaml
-        with open(config_path, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        store_config(db, Config(**data))
         
         return {
             "success": True, 
             "message": "Configuration saved successfully! Restart the container for changes to take effect."
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error saving config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -647,14 +650,12 @@ async def toggle_monitoring(container_name: str, data: Dict, session_data: str =
     """Toggle monitoring for a specific container"""
     try:
         enabled = data.get("enabled", True)
-        config_path = Path("config/config.yaml")
         
         # Read current config
-        with open(config_path, 'r') as f:
-            config_data = yaml.safe_load(f)
+        current = Config(**db.get_config_data())
         
         # Get current exclude list
-        exclude_list = config_data.get('monitoring', {}).get('exclude_containers', [])
+        exclude_list = current.monitoring.exclude_containers
         
         if enabled:
             # Enable monitoring - remove from exclude list
@@ -665,20 +666,11 @@ async def toggle_monitoring(container_name: str, data: Dict, session_data: str =
             if container_name not in exclude_list:
                 exclude_list.append(container_name)
         
-        # Update config
-        if 'monitoring' not in config_data:
-            config_data['monitoring'] = {}
-        config_data['monitoring']['exclude_containers'] = exclude_list
-        
         # Save config
-        with open(config_path, 'w') as f:
-            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+        store_config(db, current)
         
         # Reload config in memory
-        from app.config import load_config
-        global config
-        config = load_config()
-        monitor.config = config
+        reload_config()
         
         return {
             "success": True, 

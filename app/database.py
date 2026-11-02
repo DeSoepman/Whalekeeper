@@ -84,7 +84,31 @@ class Database:
                     updated_at TEXT NOT NULL
                 )
             """)
+
+            # Application configuration, stored as one JSON document
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS app_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    data TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
             
+            conn.commit()
+
+    def get_config_data(self) -> Optional[Dict]:
+        """Get the stored configuration, or None when nothing was stored yet"""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT data FROM app_config WHERE id = 1").fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_config_data(self, data: Dict):
+        """Store the configuration"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_config (id, data, updated_at) VALUES (1, ?, ?)",
+                (json.dumps(data), datetime.now().isoformat()),
+            )
             conn.commit()
     
     def add_update_history(self, container_name: str, container_id: str, 

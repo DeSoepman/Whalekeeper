@@ -17,7 +17,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app/ ./app/
-COPY config/ ./config/
 COPY VERSION ./VERSION
 COPY entrypoint.sh /entrypoint.sh
 
@@ -30,7 +29,6 @@ RUN mkdir -p /app/data
 # Expose web interface port
 EXPOSE 5454
 
-# Use entrypoint to handle config initialization
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Run the application

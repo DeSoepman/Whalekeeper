@@ -12,14 +12,14 @@ from app.notifications import NotificationService
 
 async def test_rollback_email():
     print("Loading configuration...")
-    config = load_config()
     db = Database()
+    config = load_config(db)
     notifier = NotificationService(config, db)
     
     # Check if email is enabled
     if not config.notifications.email.enabled:
-        print("ERROR: Email notifications are disabled in config.yaml")
-        print("Enable them first: notifications.email.enabled: true")
+        print("ERROR: Email notifications are disabled")
+        print("Enable them first in the web interface")
         return
     
     print(f"Sending test email to: {', '.join(config.notifications.email.to_addresses)}")

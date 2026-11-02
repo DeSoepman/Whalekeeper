@@ -62,8 +62,8 @@ Whalekeeper is a Docker container monitoring and auto-update system with rollbac
 - Properly handle async context managers
 
 #### Configuration
-- Config file: `config/config.yaml`
-- Sensitive data (SMTP passwords) encrypted in database
+- Stored in the database, see `load_config(db)` in `app/config.py`
+- The SMTP password goes through `set_secure_setting`, which does not encrypt it
 - Use the Config class for all config access
 
 ## Security Considerations

@@ -37,13 +37,13 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Whalekeeper...")
     
-    # Load configuration
-    config = load_config()
-    logger.info(f"Loaded configuration (cron schedule: {config.cron_schedule})")
-    
     # Initialize database
     db = Database()
     logger.info("Database initialized")
+
+    # Load configuration
+    config = load_config(db)
+    logger.info(f"Loaded configuration (cron schedule: {config.cron_schedule})")
     
     # Initialize notification service
     notifier = NotificationService(config, db)
@@ -111,7 +111,7 @@ app.include_router(routes.router)
 
 def main():
     """Run the application"""
-    config = load_config()
+    config = load_config(Database())
     
     uvicorn.run(
         "app.main:app",

@@ -1,8 +1,5 @@
 import pytest
-import tempfile
-import yaml
-from pathlib import Path
-from app.config import Config, load_config
+from app.config import Config
 
 
 @pytest.mark.unit
@@ -34,43 +31,6 @@ def test_config_from_dict():
     assert "whalekeeper" in config.monitoring.exclude_containers
     assert "test" in config.monitoring.exclude_containers
     assert config.rollback.keep_versions == 5
-
-
-@pytest.mark.unit
-def test_load_config_from_file():
-    """Test loading configuration from YAML file"""
-    config_data = {
-        "cron_schedule": "0 2 * * *",
-        "monitoring": {
-            "exclude_containers": ["whalekeeper"]
-        },
-        "rollback": {
-            "keep_versions": 3
-        },
-        "web": {
-            "host": "0.0.0.0",
-            "port": 5454
-        }
-    }
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-        yaml.dump(config_data, f)
-        config_path = f.name
-    
-    try:
-        config = load_config(config_path)
-        assert config.cron_schedule == "0 2 * * *"
-        assert config.rollback.keep_versions == 3
-    finally:
-        Path(config_path).unlink(missing_ok=True)
-
-
-@pytest.mark.unit
-def test_load_config_missing_file():
-    """Test loading config when file doesn't exist"""
-    config = load_config("/nonexistent/config.yaml")
-    # Should return default config
-    assert config.cron_schedule == "0 22 * * 1"
 
 
 @pytest.mark.unit

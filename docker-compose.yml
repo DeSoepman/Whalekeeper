@@ -8,9 +8,9 @@ services:
     volumes:
       # Mount Docker socket to manage containers
       - /var/run/docker.sock:/var/run/docker.sock
-      # Persist configuration
+      # Only read once, to import a config.yaml from a version before 1.1.57
       - ./config:/app/config
-      # Persist database
+      # Persist database and configuration
       - ./data:/app/data
       # Live reload for app code (development)
       - ./app:/app/app

@@ -49,7 +49,6 @@ services:
       - 5454:5454
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./config:/app/config
       - ./data:/app/data
     environment:
       - TZ=Europe/Brussels
@@ -81,9 +80,13 @@ docker build -t whalekeeper:latest .
 
 ## Configuration
 
-The config file (`config/config.yaml`) contains your settings. You can edit it through the web interface or manually.
+Settings are stored in the database in `./data` and managed through the web interface. Back up that folder to keep them.
 
-Example config:
+**Upgrading from a version with `config.yaml`:** keep the `./config` volume for the first start. Whalekeeper imports the file once and renames it to `config.yaml.migrated`. After that, you can remove the volume. Editing the file no longer has any effect.
+
+If a wrong host or port makes the web interface unreachable, set `WHALEKEEPER_WEB_HOST` or `WHALEKEEPER_WEB_PORT`. These override the stored value.
+
+The available settings:
 
 ```yaml
 # Update check schedule (cron format)
@@ -209,8 +212,7 @@ On the Dashboard tab, use the Rollback section to select a container and a previ
 - Session-based auth with HTTP-only cookies
 
 **Credential storage:**
-- SMTP password is encrypted in the database
-- Other settings are in the config file
+- All settings, including the SMTP and registry passwords, are stored **unencrypted** in the database in `./data`, so protect that folder
 
 **For production use:**
 
@@ -226,7 +228,6 @@ services:
       - "127.0.0.1:5454:5454"  # Only localhost
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only
-      - ./config:/app/config
       - ./data:/app/data
 ```
 
