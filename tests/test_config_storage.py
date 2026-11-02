@@ -1,5 +1,7 @@
 """Tests for storing the configuration in the database."""
-from unittest.mock import Mock
+import asyncio
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 import yaml
@@ -7,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import Config, load_config, save_config
+from app.docker_monitor import DockerMonitor
 from app.web import routes
 
 
@@ -194,7 +197,8 @@ class TestConfigApi:
     def test_toggle_monitoring(self, api, temp_db):
         api.post("/api/toggle-monitoring/nginx", json={"enabled": False})
         assert temp_db.get_config_data()["monitoring"]["exclude_containers"] == ["nginx"]
-        assert api.monitor.config.monitoring.exclude_containers == ["nginx"]
+        applied = api.monitor.apply_config.call_args.args[0]
+        assert applied.monitoring.exclude_containers == ["nginx"]
 
         api.post("/api/toggle-monitoring/nginx", json={"enabled": True})
         assert temp_db.get_config_data()["monitoring"]["exclude_containers"] == []
@@ -211,7 +215,93 @@ class TestConfigApi:
         assert stored["monitoring"]["exclude_containers"] == ["whalekeeper", "db"]
         assert temp_db.get_user("admin")["setup_completed"]
 
+    def test_save_applies_config_immediately(self, api):
+        response = api.post("/api/config", json={"monitoring": {"exclude_containers": ["db"]}}).json()
+
+        assert response["restart_required"] is False
+        assert "applied" in response["message"]
+        assert api.monitor.apply_config.call_args.args[0].monitoring.exclude_containers == ["db"]
+        assert routes.config.monitoring.exclude_containers == ["db"]
+
+    @pytest.mark.parametrize("web", [{"port": 6000}, {"host": "127.0.0.1"}])
+    def test_changing_host_or_port_asks_for_restart(self, api, web):
+        response = api.post("/api/config", json={"web": web}).json()
+        assert response["restart_required"] is True
+        assert "Restart" in response["message"]
+
+    def test_resending_same_port_does_not_ask_for_restart(self, api):
+        assert api.post("/api/config", json={"web": {"port": 5454}}).json()["restart_required"] is False
+
+    def test_invalid_schedule_is_rejected(self, api, temp_db):
+        response = api.post("/api/config", json={"cron_schedule": "every day"})
+        assert response.status_code == 400
+        assert temp_db.get_config_data()["cron_schedule"] == "0 22 * * 1"
+
+    def test_empty_schedule_is_allowed(self, api, temp_db):
+        assert api.post("/api/config", json={"cron_schedule": ""}).status_code == 200
+        assert temp_db.get_config_data()["cron_schedule"] == ""
+
+    def test_wizard_rejects_invalid_schedule(self, api, temp_db):
+        temp_db.create_user("admin", "hash")
+        assert api.post("/api/complete-setup", json={"cron_schedule": "nope"}).status_code == 400
+
     def test_env_override_is_not_saved_by_reload(self, api, temp_db, monkeypatch):
         monkeypatch.setenv("WHALEKEEPER_WEB_PORT", "6000")
         api.post("/api/toggle-monitoring/nginx", json={"enabled": False})
         assert temp_db.get_config_data()["web"]["port"] == 5454
+
+
+class TestApplyConfig:
+    @pytest.fixture
+    def monitor(self, test_config):
+        with patch("app.docker_monitor.docker.from_env"):
+            instance = DockerMonitor(test_config, Mock(), Mock())
+        instance.self_check_loop = AsyncMock()
+        instance.check_all_containers = AsyncMock()
+        return instance
+
+    def test_updates_monitor_and_notifier(self, monitor):
+        new = Config(rollback={"keep_versions": 9})
+        monitor.apply_config(new)
+        assert monitor.config is new
+        assert monitor.notifier.config is new
+
+    def test_same_schedule_does_not_wake_the_loop(self, monitor):
+        monitor.apply_config(Config(cron_schedule=monitor.config.cron_schedule))
+        assert not monitor.schedule_changed.is_set()
+
+    def test_new_schedule_is_used_without_restart(self, monitor):
+        async def run():
+            task = asyncio.create_task(monitor.start_monitoring())
+            await asyncio.sleep(0.05)
+            monitor.check_all_containers.assert_not_awaited()
+
+            # Replaces a schedule that is months away by one due right now
+            with patch("app.docker_monitor.croniter") as cron:
+                cron.return_value.get_next.side_effect = lambda _: datetime.now() + timedelta(milliseconds=10)
+                monitor.apply_config(Config(cron_schedule="* * * * *"))
+                await asyncio.sleep(0.2)
+            monitor.running = False
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        monitor.config = Config(cron_schedule="0 0 1 1 *")
+        asyncio.run(run())
+        assert monitor.check_all_containers.await_count >= 1
+
+    def test_empty_schedule_waits_until_one_is_configured(self, monitor):
+        async def run():
+            task = asyncio.create_task(monitor.start_monitoring())
+            await asyncio.sleep(0.05)
+            monitor.check_all_containers.assert_not_awaited()
+            with patch("app.docker_monitor.croniter") as cron:
+                cron.return_value.get_next.side_effect = lambda _: datetime.now() + timedelta(milliseconds=10)
+                monitor.apply_config(Config(cron_schedule="* * * * *"))
+                await asyncio.sleep(0.2)
+            monitor.running = False
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        monitor.config = Config(cron_schedule="")
+        asyncio.run(run())
+        assert monitor.check_all_containers.await_count >= 1

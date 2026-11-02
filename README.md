@@ -80,7 +80,7 @@ docker build -t whalekeeper:latest .
 
 ## Configuration
 
-Settings are stored in the database in `./data` and managed through the web interface. Back up that folder to keep them.
+Settings are stored in the database in `./data` and managed through the web interface. They apply as soon as you save them, except the web host and port, which need a restart. Back up that folder to keep them.
 
 **Upgrading from a version with `config.yaml`:** keep the `./config` volume for the first start. Whalekeeper imports the file once and renames it to `config.yaml.migrated`. After that, you can remove the volume. Editing the file no longer has any effect.
 

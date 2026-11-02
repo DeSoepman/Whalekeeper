@@ -50,6 +50,16 @@ class DockerMonitor:
         self.running = False
         self.update_cache = {}  # Cache of containers with updates: {container_name: update_info}
         self.diagnostics = None  # Optional DiagnosticsReporter, set at startup
+        self.schedule_changed = asyncio.Event()
+
+    def apply_config(self, config: Config) -> None:
+        """Make a saved configuration effective without restarting the app."""
+        schedule_changed = config.cron_schedule != self.config.cron_schedule
+        self.config = config
+        self.notifier.config = config
+        if schedule_changed:
+            logger.info(f"Schedule changed to '{config.cron_schedule}'")
+            self.schedule_changed.set()
 
     def _capture_state(self, container_name: str, dependents: Optional[List] = None) -> Dict:
         """
@@ -2036,26 +2046,30 @@ echo "Helper: Whalekeeper updated successfully"
         # Start self-check loop in background
         asyncio.create_task(self.self_check_loop())
         
-        # Only start cron monitoring if schedule is configured
-        if not self.config.cron_schedule or self.config.cron_schedule.strip() == '':
-            logger.info("No cron schedule configured - monitoring loop disabled")
-            return
-        
-        logger.info(f"Starting monitoring loop (cron: {self.config.cron_schedule})")
-        
-        # Create cron iterator
-        cron = croniter(self.config.cron_schedule, datetime.now())
-        
         while self.running:
+            schedule = self.config.cron_schedule
+
+            # Without a schedule, wait until one is configured
+            if not schedule or schedule.strip() == '':
+                logger.info("No cron schedule configured - monitoring loop disabled")
+                await self.schedule_changed.wait()
+                self.schedule_changed.clear()
+                continue
+
             try:
                 # Get next scheduled time
-                next_run = cron.get_next(datetime)
+                next_run = croniter(schedule, datetime.now()).get_next(datetime)
                 wait_seconds = (next_run - datetime.now()).total_seconds()
-                
-                if wait_seconds > 0:
-                    logger.info(f"Next check scheduled at {next_run.strftime('%Y-%m-%d %H:%M:%S')} (in {wait_seconds:.0f}s)")
-                    await asyncio.sleep(wait_seconds)
-                
+                logger.info(f"Next check scheduled at {next_run.strftime('%Y-%m-%d %H:%M:%S')} (in {wait_seconds:.0f}s)")
+
+                # Wait for that time, unless the schedule changes first
+                try:
+                    await asyncio.wait_for(self.schedule_changed.wait(), timeout=max(wait_seconds, 0))
+                    self.schedule_changed.clear()
+                    continue
+                except asyncio.TimeoutError:
+                    pass
+
                 # Run the check
                 await self.check_all_containers()
             except Exception as e:

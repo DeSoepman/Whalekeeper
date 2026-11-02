@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 import os
 import secrets
+from croniter import croniter
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from passlib.context import CryptContext
 
@@ -40,7 +41,7 @@ def reload_config() -> None:
     """Make a saved configuration effective for the running app."""
     global config
     config = load_config(db)
-    monitor.config = config
+    monitor.apply_config(config)
 
 
 def get_session_cookie(session: Optional[str] = Cookie(None)) -> Optional[str]:
@@ -218,6 +219,8 @@ async def complete_setup(request: Request, session_data: str = Depends(require_a
         
         # Update cron schedule
         if 'cron_schedule' in data:
+            if data['cron_schedule'].strip() and not croniter.is_valid(data['cron_schedule']):
+                raise HTTPException(status_code=400, detail=f"Invalid cron schedule: {data['cron_schedule']}")
             current.cron_schedule = data['cron_schedule']
         
         # Start with a fresh exclusion list based on wizard choices
@@ -251,6 +254,8 @@ async def complete_setup(request: Request, session_data: str = Depends(require_a
             "message": "Setup completed successfully!"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error completing setup: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -541,7 +546,8 @@ async def get_config(session_data: str = Depends(require_auth)):
 async def save_config(data: Dict, session_data: str = Depends(require_auth)):
     """Save configuration"""
     try:
-        data = merge_config(db.get_config_data() or {}, data)
+        stored = db.get_config_data() or {}
+        data = merge_config(stored, data)
 
         # Reject invalid values now: stored as-is, they would stop the app from starting.
         try:
@@ -551,6 +557,11 @@ async def save_config(data: Dict, session_data: str = Depends(require_auth)):
                 f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in e.errors()
             )
             raise HTTPException(status_code=400, detail=f"Invalid configuration: {problems}")
+
+        # An invalid schedule would stop all automatic checks.
+        schedule = str(data.get('cron_schedule') or '').strip()
+        if schedule and not croniter.is_valid(schedule):
+            raise HTTPException(status_code=400, detail=f"Invalid cron schedule: {schedule}")
 
         # Extract and save SMTP password to database if provided
         smtp_password = data.get('notifications', {}).get('email', {}).get('password', '')
@@ -566,11 +577,23 @@ async def save_config(data: Dict, session_data: str = Depends(require_auth)):
         if data.get('notifications', {}).get('email'):
             data['notifications']['email']['password'] = ''
         
-        store_config(db, Config(**data))
-        
+        new_config = Config(**data)
+        store_config(db, new_config)
+        reload_config()
+
+        # The server is already listening, so these can't change while it runs.
+        web_changed = (
+            new_config.web.host != stored.get('web', {}).get('host')
+            or new_config.web.port != stored.get('web', {}).get('port')
+        )
+        message = "Configuration saved and applied."
+        if web_changed:
+            message = "Configuration saved. Restart the container for the new host or port to take effect."
+
         return {
-            "success": True, 
-            "message": "Configuration saved successfully! Restart the container for changes to take effect."
+            "success": True,
+            "message": message,
+            "restart_required": web_changed
         }
     except HTTPException:
         raise
