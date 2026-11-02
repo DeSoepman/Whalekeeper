@@ -539,3 +539,213 @@ async def test_rollback_drops_options_owned_by_namespace_parent(docker_monitor):
     assert 'hostname' not in run_kwargs
     assert 'ports' not in run_kwargs
     assert run_kwargs['image'] == 'sha256:oldimage'
+
+
+# Regression tests: gluetun failing its health check left qbittorrent running in the
+# network namespace of a removed container, until 'docker compose up -d' was run.
+def _health_monitor(statuses):
+    """A monitor whose container reports the given health statuses, one per check."""
+    monitor = _rollback_monitor()
+    container = Mock()
+    container.status = 'running'
+    remaining = iter(statuses)
+
+    def reload():
+        container.attrs = {
+            'Config': {'Healthcheck': {'Test': ['CMD', 'true']}},
+            'State': {'Health': {'Status': next(remaining)}},
+        }
+
+    container.reload = reload
+    monitor.client.containers.get.return_value = container
+    return monitor
+
+
+def _rollback_monitor():
+    with patch('docker.from_env'):
+        monitor = DockerMonitor(Config(), Mock(), AsyncMock())
+    return monitor
+
+
+@pytest.mark.asyncio
+async def test_slow_start_is_not_treated_as_failure():
+    monitor = _health_monitor(['unhealthy', 'unhealthy', 'unhealthy', 'unhealthy', 'unhealthy', 'healthy'])
+    with patch('app.docker_monitor.asyncio.sleep', new=AsyncMock()):
+        healthy, reason = await monitor.monitor_container_health('gluetun', 'old')
+    assert healthy is True
+    assert reason == ""
+
+
+@pytest.mark.asyncio
+async def test_container_that_stays_unhealthy_fails():
+    monitor = _health_monitor(['unhealthy'] * 200)
+    with patch('app.docker_monitor.asyncio.sleep', new=AsyncMock()):
+        healthy, reason = await monitor.monitor_container_health('gluetun', 'old')
+    assert healthy is False
+    assert 'unhealthy' in reason
+
+
+@pytest.mark.asyncio
+async def test_rollback_reattaches_namespace_dependent():
+    monitor = _rollback_monitor()
+    dependent = _make_netns_dependent(f'container:{GLUETUN_ID}')
+    monitor.detect_dependent_containers = Mock(return_value=[dependent])
+    monitor.restart_dependent_containers = AsyncMock(return_value={'qbittorrent': True})
+    monitor.reconnect_networks = Mock(return_value=True)
+    monitor.client.containers.run.return_value = Mock(id='rolledback')
+
+    result = await monitor.rollback_after_failed_update(
+        'gluetun', 'sha256:old', {'name': 'gluetun', 'network_mode': 'bridge'}, 'unhealthy'
+    )
+
+    assert result is True
+    monitor.restart_dependent_containers.assert_awaited_once_with(
+        'gluetun', pre_stopped=[dependent], new_parent_id='rolledback'
+    )
+
+
+@pytest.mark.asyncio
+async def test_rollback_detects_dependents_before_removing_failed_container():
+    monitor = _rollback_monitor()
+    calls = []
+    monitor.detect_dependent_containers = Mock(side_effect=lambda name: calls.append('detect') or [])
+    failed = Mock()
+    failed.remove.side_effect = lambda: calls.append('remove')
+    monitor.client.containers.get.return_value = failed
+    monitor.reconnect_networks = Mock(return_value=True)
+    monitor.client.containers.run.return_value = Mock(id='rolledback')
+
+    await monitor.rollback_after_failed_update('gluetun', 'sha256:old', {'name': 'gluetun'}, 'x')
+
+    assert calls == ['detect', 'remove']
+
+
+def test_rollback_skips_stale_pre_stopped_dependent():
+    monitor = _rollback_monitor()
+    monitor.detect_dependent_containers = Mock(return_value=[])
+    stale = _make_netns_dependent(f'container:{GLUETUN_ID}')
+    stale.reload = Mock(side_effect=docker.errors.NotFound('gone'))
+    stopped = _make_netns_dependent(f'container:{GLUETUN_ID}', name='other')
+    stopped.reload = Mock()
+
+    assert monitor._dependents_for_rollback('gluetun', [stale, stopped]) == [stopped]
+
+
+@pytest.mark.asyncio
+async def test_failed_start_rolls_back_and_brings_dependents_back():
+    monitor = _rollback_monitor()
+    monitor._get_image_version = Mock(return_value='v1')
+    monitor.get_container_config = Mock(return_value={'name': 'gluetun'})
+    dependent = _make_netns_dependent(f'container:{GLUETUN_ID}')
+    monitor.stop_dependent_containers = Mock(return_value=[dependent])
+    monitor.client.containers.run.side_effect = docker.errors.APIError('start failed')
+    monitor.rollback_after_failed_update = AsyncMock(return_value=True)
+    container = Mock(labels={}, id='old-id')
+    container.name = 'gluetun'
+    info = {'container': container, 'old_image': Mock(id='sha256:old'),
+            'new_image': Mock(id='sha256:new'), 'image_name': 'gluetun:latest'}
+
+    assert await monitor.update_container(info, send_notification=False) is False
+
+    args = monitor.rollback_after_failed_update.await_args.args
+    assert args[0:2] == ('gluetun', 'sha256:old')
+    assert args[4] == [dependent]
+
+
+@pytest.mark.asyncio
+async def test_failure_before_removal_does_not_roll_back():
+    monitor = _rollback_monitor()
+    monitor._get_image_version = Mock(return_value='v1')
+    monitor.get_container_config = Mock(return_value={'name': 'gluetun'})
+    monitor.stop_dependent_containers = Mock(return_value=[])
+    monitor.rollback_after_failed_update = AsyncMock()
+    container = Mock(labels={}, id='old-id')
+    container.name = 'gluetun'
+    container.stop.side_effect = docker.errors.APIError('cannot stop')
+    info = {'container': container, 'old_image': Mock(id='sha256:old'),
+            'new_image': Mock(id='sha256:new'), 'image_name': 'gluetun:latest'}
+
+    assert await monitor.update_container(info, send_notification=False) is False
+    monitor.rollback_after_failed_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_batch_skips_stale_snapshot_of_recreated_dependent():
+    monitor = _rollback_monitor()
+    snapshot = Mock(id='old-qbit')
+    snapshot.name = 'qbittorrent'
+    fresh = Mock(id='new-qbit')
+    fresh.name = 'qbittorrent'
+    monitor.get_monitored_containers = Mock(return_value=[snapshot])
+
+    monitor.client.containers.get.return_value = fresh
+    monitor.check_for_updates = Mock(return_value=None)
+    monitor.send_summary_notification = AsyncMock()
+
+    await monitor.check_all_containers()
+
+    monitor.check_for_updates.assert_called_once_with(fresh)
+
+
+@pytest.mark.asyncio
+async def test_batch_skips_container_removed_during_run():
+    monitor = _rollback_monitor()
+    snapshot = Mock(id='old')
+    snapshot.name = 'gone'
+    monitor.get_monitored_containers = Mock(return_value=[snapshot])
+    monitor.client.containers.get.side_effect = docker.errors.NotFound('gone')
+    monitor.check_for_updates = Mock()
+    monitor.send_summary_notification = AsyncMock()
+
+    await monitor.check_all_containers()
+
+    monitor.check_for_updates.assert_not_called()
+
+
+def _config_of(container_config, image_config):
+    with patch('docker.from_env'):
+        monitor = DockerMonitor(Config(), Mock(), AsyncMock())
+    container = Mock()
+    container.name = 'gluetun'
+    container.attrs = {'Config': container_config, 'HostConfig': {}, 'NetworkSettings': {}}
+    container.image.attrs = {'Config': image_config}
+    return monitor.get_container_config(container)
+
+
+def test_image_defaults_are_not_frozen_into_new_container():
+    config = _config_of(
+        {'Image': 'gluetun', 'Env': ['WIREGUARD_MTU=1400', 'DOT=on', 'VPN_TYPE=wireguard', 'PATH=/bin'],
+         'Entrypoint': ['/gluetun-entrypoint'], 'Cmd': None, 'WorkingDir': '/', 'User': ''},
+        {'Env': ['WIREGUARD_MTU=1400', 'DOT=on', 'VPN_TYPE=openvpn', 'PATH=/bin'],
+         'Entrypoint': ['/gluetun-entrypoint'], 'Cmd': None, 'WorkingDir': '/', 'User': ''},
+    )
+    assert config['environment'] == ['VPN_TYPE=wireguard']
+    assert config['entrypoint'] is None
+    assert config['working_dir'] is None
+    assert config['user'] is None
+
+
+def test_values_set_for_the_container_are_kept():
+    config = _config_of(
+        {'Image': 'gluetun', 'Env': ['A=1'], 'Entrypoint': ['/custom'], 'Cmd': ['run'], 'WorkingDir': '/app', 'User': '1000'},
+        {'Env': [], 'Entrypoint': ['/default'], 'Cmd': ['serve'], 'WorkingDir': '/', 'User': ''},
+    )
+    assert config['environment'] == ['A=1']
+    assert config['entrypoint'] == ['/custom']
+    assert config['command'] == ['run']
+    assert config['working_dir'] == '/app'
+    assert config['user'] == '1000'
+
+
+def test_all_values_kept_when_image_is_gone():
+    with patch('docker.from_env'):
+        monitor = DockerMonitor(Config(), Mock(), AsyncMock())
+    container = Mock()
+    container.name = 'gluetun'
+    container.attrs = {'Config': {'Image': 'gluetun', 'Env': ['A=1'], 'Cmd': ['run']}, 'HostConfig': {}, 'NetworkSettings': {}}
+    type(container).image = property(lambda self: (_ for _ in ()).throw(docker.errors.ImageNotFound('gone')))
+
+    config = monitor.get_container_config(container)
+
+    assert config['environment'] == ['A=1']
+    assert config['command'] == ['run']

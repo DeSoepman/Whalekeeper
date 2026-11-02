@@ -36,6 +36,10 @@ NETNS_CONFLICTING_OPTIONS = (
     'publish_all_ports',
 )
 
+# An app can report unhealthy while it is still starting: a VPN container like gluetun
+# fails its health check until the tunnel is up. Only give up when it stays unhealthy.
+UNHEALTHY_GRACE_SECONDS = 180
+
 
 class DockerMonitor:
     def __init__(self, config: Config, db: Database, notifier: NotificationService):
@@ -249,12 +253,32 @@ class DockerMonitor:
             logger.error(f"Error checking updates for {container.name}: {e}")
             return None
     
+    @staticmethod
+    def _image_config(container) -> Dict:
+        """The Config of the container's image, or {} when the image is gone."""
+        try:
+            image_config = container.image.attrs.get('Config')
+        except docker.errors.APIError as e:
+            logger.debug(f"Could not read image of {container.name}: {e}")
+            return {}
+        return image_config if isinstance(image_config, dict) else {}
+
     def get_container_config(self, container) -> Dict:
         """Extract container configuration for recreation"""
         attrs = container.attrs
         config = attrs['Config']
         host_config = attrs['HostConfig']
         network_settings = attrs.get('NetworkSettings', {})
+
+        # A container's config includes everything inherited from its image. Keeping
+        # those values would freeze the old image's defaults into the new container, so
+        # only keep what was set for this container and let the image provide the rest.
+        image_config = self._image_config(container)
+        image_env = set(image_config.get('Env') or [])
+
+        def own_value(key):
+            value = config.get(key)
+            return None if image_config and value == image_config.get(key) else value
         
         # Capture all networks and their aliases (critical for compose containers)
         networks = {}
@@ -279,17 +303,17 @@ class DockerMonitor:
         return {
             'image': attrs['Config']['Image'],
             'name': container.name,
-            'environment': config.get('Env', []),
+            'environment': [item for item in config.get('Env') or [] if item not in image_env],
             'volumes': host_config.get('Binds', []),
             'ports': host_config.get('PortBindings', {}),
             'network_mode': host_config.get('NetworkMode', 'bridge'),
             'networks': networks,  # All networks with aliases
             'restart_policy': host_config.get('RestartPolicy', {}),
             'labels': config.get('Labels', {}),
-            'command': config.get('Cmd'),
-            'entrypoint': config.get('Entrypoint'),
-            'working_dir': config.get('WorkingDir'),
-            'user': config.get('User'),
+            'command': own_value('Cmd'),
+            'entrypoint': own_value('Entrypoint'),
+            'working_dir': own_value('WorkingDir'),
+            'user': own_value('User'),
             'hostname': config.get('Hostname'),
             'extra_hosts': host_config.get('ExtraHosts'),
             'privileged': host_config.get('Privileged', False),
@@ -919,7 +943,9 @@ echo "Helper: Whalekeeper updated successfully"
                         logger.info(f"{container_name} is healthy after {elapsed}s")
                         return True, ""
                     elif health_status == 'unhealthy':
-                        return False, "Docker health check failed (status: unhealthy)"
+                        if elapsed >= UNHEALTHY_GRACE_SECONDS:
+                            return False, f"Docker health check failed (status: unhealthy for over {UNHEALTHY_GRACE_SECONDS}s)"
+                        logger.info(f"{container_name} is unhealthy after {elapsed}s, waiting to see if it recovers")
                     
                     # Still starting or checking, wait more
                     await asyncio.sleep(check_interval)
@@ -961,14 +987,38 @@ echo "Helper: Whalekeeper updated successfully"
             logger.error(f"Error monitoring health for {container_name}: {e}")
             return False, f"Health check error: {str(e)}"
     
-    async def rollback_after_failed_update(self, container_name: str, old_image_id: str, 
-                                          container_config: Dict, failure_reason: str) -> bool:
+    def _dependents_for_rollback(self, container_name: str, pre_stopped: Optional[List]) -> List:
         """
-        Rollback to previous image after failed health check.
+        Dependents to bring back after a rollback: those still attached to the failed
+        container, plus those stopped before the update. A pre-stopped container may
+        have been recreated since, which leaves a stale object that is skipped here.
+        """
+        dependents = self.detect_dependent_containers(container_name)
+        known = {dependent.name for dependent in dependents}
+        for dependent in pre_stopped or []:
+            if dependent.name in known:
+                continue
+            try:
+                dependent.reload()
+                dependents.append(dependent)
+            except docker.errors.NotFound:
+                logger.debug(f"Dependent {dependent.name} was already recreated")
+        return dependents
+
+    async def rollback_after_failed_update(self, container_name: str, old_image_id: str, 
+                                          container_config: Dict, failure_reason: str,
+                                          pre_stopped_dependents: Optional[List] = None) -> bool:
+        """
+        Rollback to previous image after a failed update, and reattach dependents.
+        The rollback creates a container with a new ID, so a dependent sharing its
+        network namespace would otherwise keep running without a working network.
         """
         try:
             logger.warning(f"Auto-rollback triggered for {container_name}: {failure_reason}")
-            
+
+            # Must happen first: the dependents are matched on the failed container's ID.
+            dependents = self._dependents_for_rollback(container_name, pre_stopped_dependents)
+
             # Get current (failed) container
             try:
                 failed_container = self.client.containers.get(container_name)
@@ -993,6 +1043,13 @@ echo "Helper: Whalekeeper updated successfully"
             network_success = self.reconnect_networks(new_container, container_config)
             if not network_success:
                 logger.warning(f"Rollback succeeded but some networks failed to reconnect for {container_name}")
+
+            dependent_results = await self.restart_dependent_containers(
+                container_name,
+                pre_stopped=dependents,
+                new_parent_id=new_container.id
+            )
+            self._report_failed_dependents(container_name, dependent_results)
             
             logger.info(f"Successfully rolled back {container_name} to {old_image_id[:12]}")
             return True
@@ -1034,6 +1091,7 @@ echo "Helper: Whalekeeper updated successfully"
                 logger.info(f"Docker CLI not available, using Docker SDK with network preservation for {container.name}")
 
         pre_stopped_dependents = []
+        old_container_removed = False
         try:
             
             # Save current configuration for rollback
@@ -1065,6 +1123,7 @@ echo "Helper: Whalekeeper updated successfully"
             logger.info(f"Stopping container {container.name}")
             container.stop(timeout=30)
             container.remove()
+            old_container_removed = True
             
             # Create new container with same config but new image
             logger.info(f"Creating new container {container.name} with image {new_image.id[:12]}")
@@ -1229,6 +1288,16 @@ echo "Helper: Whalekeeper updated successfully"
                 status="failed",
                 message=str(e)
             )
+
+            # The old container is gone, so without this the service stays down.
+            if old_container_removed:
+                await self.rollback_after_failed_update(
+                    container.name,
+                    old_image.id,
+                    container_config,
+                    str(e),
+                    pre_stopped_dependents
+                )
             
             # Send failure notification (only for individual updates, not batch)
             if send_notification:
@@ -1382,7 +1451,8 @@ echo "Helper: Whalekeeper updated successfully"
                     container.name,
                     old_image.id,
                     container_config,
-                    failure_reason
+                    failure_reason,
+                    pre_stopped_dependents
                 )
                 self._report(
                     "update_rolled_back", "warning" if rollback_success else "error", container.name,
@@ -1783,6 +1853,14 @@ echo "Helper: Whalekeeper updated successfully"
         
         for container in containers:
             results['checked'] += 1
+
+            # Updating a parent recreates its dependents, which makes this object stale.
+            try:
+                container = self.client.containers.get(container.name)
+            except docker.errors.NotFound:
+                logger.info(f"Container {container.name} no longer exists, skipping")
+                continue
+
             update_info = self.check_for_updates(container)
             
             if update_info:
